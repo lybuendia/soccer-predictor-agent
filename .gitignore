@@ -1,0 +1,24 @@
+# Environment — never commit credentials
+.env
+.env.local
+.env.*.local
+
+# Storage
+*.db
+.chroma/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+demo.ipynb
+
+# OS
+.DS_Store
