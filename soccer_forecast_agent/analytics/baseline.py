@@ -17,6 +17,7 @@ class SimpleBaselineStrategy:
 
     RESULT_POINTS = {"W": 3, "D": 1, "L": 0}
     MAX_FORM_POINTS = 15  # 5 wins × 3 points
+    WIN_PROBABILITY_FLOOR = 0.05
 
     def __init__(self, home_advantage_boost: float = 0.05) -> None:
         """Initialise with a configurable home advantage scalar added to the home team's raw strength."""
@@ -40,8 +41,10 @@ class SimpleBaselineStrategy:
         raw_away = away_strength / total
 
         draw_weight = 0.26
-        home_win = raw_home * (1 - draw_weight)
-        away_win = raw_away * (1 - draw_weight)
+        available_mass = 1 - draw_weight
+        home_win = max(raw_home * available_mass, self.WIN_PROBABILITY_FLOOR)
+        away_win = max(raw_away * available_mass, self.WIN_PROBABILITY_FLOOR)
+        home_win, away_win = self._renormalize_pair(home_win, away_win, available_mass)
         draw = draw_weight
 
         total_goals_est = (home_attack + away_defense + away_attack + home_defense) / 2
@@ -62,3 +65,11 @@ class SimpleBaselineStrategy:
             return 0.5
         points = sum(self.RESULT_POINTS.get(r, 0) for r in results)
         return points / (len(results) * 3)
+
+    def _renormalize_pair(self, first: float, second: float, total: float) -> tuple[float, float]:
+        """Scale a two-probability pair so it sums to the requested total."""
+        pair_total = first + second
+        if pair_total == 0:
+            return total / 2, total / 2
+        scale = total / pair_total
+        return first * scale, second * scale

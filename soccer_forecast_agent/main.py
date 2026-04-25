@@ -9,6 +9,11 @@ load_dotenv()  # loads .env before Config.from_env() reads os.environ
 from soccer_forecast_agent.config import Config
 from soccer_forecast_agent.providers.openai_provider import OpenAIProvider
 from soccer_forecast_agent.providers.claude_provider import ClaudeProvider
+from soccer_forecast_agent.providers.embeddings import (
+    EmbeddingProvider,
+    OpenAIEmbeddingProvider,
+    SentenceTransformerEmbeddingProvider,
+)
 from soccer_forecast_agent.providers.llm import LLMProvider
 from soccer_forecast_agent.analytics.baseline import SimpleBaselineStrategy
 from soccer_forecast_agent.analytics.features import FeatureExtractor
@@ -20,7 +25,7 @@ from soccer_forecast_agent.tools.odds import OddsFetcher
 from soccer_forecast_agent.tools.search import WebSearchTool
 from soccer_forecast_agent.tools.ingester import ArticleIngester
 from soccer_forecast_agent.tools.email_sender import EmailAlertChannel
-from soccer_forecast_agent.guardrails.alert_guard import AlertGuard
+from soccer_forecast_agent.guardrails.alert_guard import AlertGuard, AlertGuardConfig
 from soccer_forecast_agent.agents.stats_market import StatsMarketAgent
 from soccer_forecast_agent.agents.news_context import NewsContextAgent, ToolDispatcher
 from soccer_forecast_agent.agents.synthesis_alert import SynthesisAlertAgent
@@ -37,6 +42,16 @@ def build_llm_provider(config: Config) -> LLMProvider:
     raise ValueError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
 
 
+def build_embedding_provider(config: Config) -> EmbeddingProvider:
+    """Instantiate the configured embedding provider."""
+    if config.embedding_provider == "huggingface":
+        return SentenceTransformerEmbeddingProvider(model_name=config.embedding_model)
+    if config.embedding_provider == "openai":
+        client = openai.OpenAI(api_key=config.openai_api_key)
+        return OpenAIEmbeddingProvider(client=client, model=config.embedding_model)
+    raise ValueError(f"Unknown EMBEDDING_PROVIDER: {config.embedding_provider}")
+
+
 def main() -> None:
     """Wire all dependencies and run one forecast scan."""
     config = Config.from_env()
@@ -46,15 +61,12 @@ def main() -> None:
     seed_source_reliability(db_conn)
 
     chroma_client = chromadb.PersistentClient(path=config.chroma_path)
-    oai_client = openai.OpenAI(api_key=config.openai_api_key)
 
     sql_repo = SQLiteRepository(db_conn)
+    embedding_provider = build_embedding_provider(config)
     vector_repo = ChromaVectorRepository(
         client=chroma_client,
-        embedding_fn=lambda texts: [
-            item.embedding
-            for item in oai_client.embeddings.create(input=texts, model="text-embedding-3-small").data
-        ],
+        embedding_provider=embedding_provider,
     )
 
     llm = build_llm_provider(config)
@@ -66,9 +78,11 @@ def main() -> None:
         config.smtp_host, config.smtp_port, config.smtp_user, config.smtp_password, config.alert_email
     )
     guard = AlertGuard(
-        min_edge_threshold=config.min_edge_threshold,
-        min_confidence_threshold=config.min_confidence_threshold,
-        spam_window_hours=config.spam_window_hours,
+        AlertGuardConfig(
+            min_edge_threshold=config.min_edge_threshold,
+            min_confidence_threshold=config.min_confidence_threshold,
+            spam_window_hours=config.spam_window_hours,
+        )
     )
 
     stats_agent = StatsMarketAgent(fixture_fetcher, odds_fetcher, SimpleBaselineStrategy(), FeatureExtractor(), sql_repo)

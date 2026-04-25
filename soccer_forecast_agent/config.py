@@ -9,6 +9,7 @@ class Config:
     """All runtime settings. Load via Config.from_env() — never instantiate with literals in production."""
 
     llm_provider: str
+    embedding_provider: str
     openai_api_key: str
     anthropic_api_key: str
     football_data_api_key: str
@@ -21,6 +22,7 @@ class Config:
     alert_email: str
     db_path: str
     chroma_path: str
+    embedding_model: str
     min_edge_threshold: float = 0.05
     min_confidence_threshold: float = 0.60
     home_advantage_boost: float = 0.05
@@ -34,6 +36,7 @@ class Config:
         """Build Config from environment variables. Raises KeyError for any missing required var."""
         return cls(
             llm_provider=os.environ["LLM_PROVIDER"],
+            embedding_provider=os.environ.get("EMBEDDING_PROVIDER", "huggingface"),
             openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             football_data_api_key=os.environ["FOOTBALL_DATA_API_KEY"],
@@ -46,4 +49,5 @@ class Config:
             alert_email=os.environ["ALERT_EMAIL"],
             db_path=os.environ.get("DB_PATH", "soccer_forecast.db"),
             chroma_path=os.environ.get("CHROMA_PATH", ".chroma"),
+            embedding_model=os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
         )

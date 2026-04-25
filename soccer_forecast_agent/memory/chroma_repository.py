@@ -1,20 +1,20 @@
 """ChromaDB implementation of VectorRepository for news and evidence content."""
 
-from collections.abc import Callable
 import re
 
 from soccer_forecast_agent.models.evidence import ArticleChunk
+from soccer_forecast_agent.providers.embeddings import EmbeddingProvider
 
 
 class ChromaVectorRepository:
-    """Stores and retrieves article chunks using ChromaDB with OpenAI embeddings."""
+    """Stores and retrieves article chunks using ChromaDB and an injected embedding provider."""
 
     COLLECTION_NAME = "soccer_news"
 
-    def __init__(self, client, embedding_fn: Callable[[list[str]], list[list[float]]]) -> None:
-        """Initialise with an injected chromadb.Client and an embedding callable."""
+    def __init__(self, client, embedding_provider: EmbeddingProvider) -> None:
+        """Initialise with an injected chromadb.Client and embedding provider."""
         self._collection = client.get_or_create_collection(self.COLLECTION_NAME)
-        self._embed = embedding_fn
+        self._embeddings = embedding_provider
 
     def upsert(self, chunks: list[ArticleChunk]) -> None:
         """Embed and upsert article chunks; existing chunk_ids are overwritten."""
@@ -24,7 +24,7 @@ class ChromaVectorRepository:
         self._collection.upsert(
             ids=[c.chunk_id for c in chunks],
             documents=documents,
-            embeddings=self._embed(documents),
+            embeddings=self._embeddings.embed(documents),
             metadatas=[self._metadata_for(c) for c in chunks],
         )
 
@@ -32,7 +32,7 @@ class ChromaVectorRepository:
         """Return the top_k chunks most semantically relevant to query, filtered by team membership."""
         where = self._team_filter(teams)
         results = self._collection.query(
-            query_embeddings=self._embed([query]),
+            query_embeddings=self._embeddings.embed([query]),
             n_results=top_k,
             **({"where": where} if where else {}),
         )
