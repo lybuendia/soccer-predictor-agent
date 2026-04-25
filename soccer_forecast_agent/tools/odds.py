@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 import uuid
 import httpx
+from soccer_forecast_agent.domain.team_names import TeamNameNormalizer
 from soccer_forecast_agent.models.match import MarketOdds
 
 
@@ -13,10 +14,16 @@ class OddsFetcher:
     SPORT_KEY = "soccer_epl"
     PREFERRED_BOOKMAKERS = {"bet365", "williamhill", "unibet", "pinnacle"}
 
-    def __init__(self, api_key: str, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        client: httpx.Client | None = None,
+        team_name_normalizer: TeamNameNormalizer | None = None,
+    ) -> None:
         """Initialise with an API key and an optional injected HTTP client."""
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=10)
+        self._team_names = team_name_normalizer or TeamNameNormalizer()
 
     def fetch_odds(self, home_team: str, away_team: str) -> MarketOdds | None:
         """Return the latest market odds for the match identified by home/away team names, or None if not listed."""
@@ -114,4 +121,4 @@ class OddsFetcher:
 
     def _normalise(self, name: str) -> str:
         """Lowercase and strip team name for fuzzy matching across API naming conventions."""
-        return name.lower().strip()
+        return self._team_names.canonicalize(name).lower().strip()

@@ -1,0 +1,56 @@
+[
+  {
+    "article_id": "arsenal-injury-boost-2026-04-24",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4639292/the-briefing",
+    "published_at": "2026-04-24T00:00:00+00:00",
+    "title": "Arsenal receive a fitness boost before Newcastle",
+    "teams": ["Arsenal", "Newcastle"],
+    "content": "Premier League coverage reported that Bukayo Saka returned to Arsenal's squad before the Newcastle match. The update framed his return as a major boost to Arsenal's title push after a difficult run of league results."
+  },
+  {
+    "article_id": "arsenal-city-injury-latest-2026-04-14",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4630694/the-briefing-top-premier-league-stories-on-14-april-2026",
+    "published_at": "2026-04-14T00:00:00+00:00",
+    "title": "Several Arsenal players face fitness concerns before Manchester City",
+    "teams": ["Arsenal", "Manchester City"],
+    "content": "A Premier League briefing said Arsenal had multiple injury concerns before facing Manchester City. Declan Rice, Bukayo Saka, Martin Odegaard, Jurrien Timber and Riccardo Calafiori were all discussed as doubtful or being assessed."
+  },
+  {
+    "article_id": "city-arsenal-title-duel-2026-04-19",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4630818/all-you-need-to-know-about-huge-man-city-v-arsenal-title-showdown-at-etihad-stadium-on-19-april-2026",
+    "published_at": "2026-04-19T00:00:00+00:00",
+    "title": "Manchester City and Arsenal meet in a decisive title clash",
+    "teams": ["Manchester City", "Arsenal"],
+    "content": "Premier League analysis described Manchester City against Arsenal as one of the biggest title-race matches in years. The piece emphasized how a City win could dramatically tighten the race and shift momentum toward the Etihad side."
+  },
+  {
+    "article_id": "man-utd-chelsea-top-five-2026-04-18",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4632704/saturday-wrap-man-utd-boost-top-five-hopes-with-clinical-win-at-chelsea/",
+    "published_at": "2026-04-18T00:00:00+00:00",
+    "title": "Manchester United strengthen their top-five chase with a win at Chelsea",
+    "teams": ["Manchester United", "Chelsea"],
+    "content": "A Premier League round-up highlighted Manchester United's 1-0 win at Chelsea as a major result in the race for Champions League qualification. The report contrasted United's defensive resilience with Chelsea's poor scoring run."
+  },
+  {
+    "article_id": "brighton-chelsea-welbeck-2026-04-22",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4638156/the-briefing-welbecks-ronaldo-tribute-pogba-praises-mainoo-and-more",
+    "published_at": "2026-04-22T00:00:00+00:00",
+    "title": "Danny Welbeck stars as Brighton beat Chelsea",
+    "teams": ["Brighton", "Chelsea"],
+    "content": "A Premier League briefing focused on Danny Welbeck after Brighton's 3-0 win over Chelsea. The story linked his goal and celebration to strong late-season form and underlined another poor result for Chelsea."
+  },
+  {
+    "article_id": "relegation-battle-spurs-west-ham-2026-04-19",
+    "source": "premierleague.com",
+    "url": "https://www.premierleague.com/en/news/4609609/undefined",
+    "published_at": "2026-04-19T00:00:00+00:00",
+    "title": "Tottenham, West Ham and others are drawn into the relegation fight",
+    "teams": ["Tottenham", "West Ham", "Wolves", "Burnley", "Leeds", "Forest"],
+    "content": "Premier League coverage of the relegation battle said Tottenham remained deep in danger despite a managerial change. The article also discussed West Ham, Wolves, Burnley, Leeds and Nottingham Forest as clubs still involved in the fight to stay up."
+  }
+]

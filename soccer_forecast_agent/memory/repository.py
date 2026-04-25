@@ -16,6 +16,10 @@ class MatchRepository(Protocol):
         """Return all matches with status 'upcoming' for the given competition."""
         ...
 
+    def get_recent_finished(self, team: str, competition: str, limit: int = 5) -> list[Match]:
+        """Return the most recent finished matches for a team in a competition."""
+        ...
+
     def update_status(self, match_id: str, status: str, final_score: str | None = None) -> None:
         """Update match status and optionally record the final score."""
         ...

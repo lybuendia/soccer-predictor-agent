@@ -31,6 +31,10 @@ class SQLiteRepository:
             INSERT INTO matches (match_id, competition, home_team, away_team, kickoff_time, status, final_score)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(match_id) DO UPDATE SET
+                competition=excluded.competition,
+                home_team=excluded.home_team,
+                away_team=excluded.away_team,
+                kickoff_time=excluded.kickoff_time,
                 status=excluded.status,
                 final_score=excluded.final_score
             """,
@@ -51,6 +55,23 @@ class SQLiteRepository:
         rows = self._conn.execute(
             "SELECT * FROM matches WHERE competition = ? AND status = 'upcoming' ORDER BY kickoff_time",
             (competition,),
+        ).fetchall()
+        return [self._row_to_match(r) for r in rows]
+
+    def get_recent_finished(self, team: str, competition: str, limit: int = 5) -> list[Match]:
+        """Return the most recent finished matches for a team in a competition."""
+        rows = self._conn.execute(
+            """
+            SELECT *
+            FROM matches
+            WHERE competition = ?
+              AND status = 'resolved'
+              AND final_score IS NOT NULL
+              AND (home_team = ? OR away_team = ?)
+            ORDER BY kickoff_time DESC
+            LIMIT ?
+            """,
+            (competition, team, team, limit),
         ).fetchall()
         return [self._row_to_match(r) for r in rows]
 

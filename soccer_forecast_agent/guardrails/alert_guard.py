@@ -14,29 +14,26 @@ class GuardResult:
     reasons: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class AlertGuardConfig:
+    """Tunable thresholds that define the alert quality bar."""
+
+    min_evidence_count: int = 3
+    min_avg_reliability: float = 0.5
+    max_evidence_age_hours: int = 48
+    min_unique_sources: int = 2
+    min_edge_threshold: float = 0.05
+    min_confidence_threshold: float = 0.60
+    spam_window_hours: int = 6
+    min_odds_delta: float = 0.05
+
+
 class AlertGuard:
     """Enforces evidence quality, confidence, edge, and spam suppression rules before any alert fires."""
 
-    def __init__(
-        self,
-        min_evidence_count: int = 3,
-        min_avg_reliability: float = 0.5,
-        max_evidence_age_hours: int = 48,
-        min_unique_sources: int = 2,
-        min_edge_threshold: float = 0.05,
-        min_confidence_threshold: float = 0.60,
-        spam_window_hours: int = 6,
-        min_odds_delta: float = 0.05,
-    ) -> None:
-        """Initialise with configurable thresholds for all guard checks."""
-        self._min_evidence_count = min_evidence_count
-        self._min_avg_reliability = min_avg_reliability
-        self._max_evidence_age_hours = max_evidence_age_hours
-        self._min_unique_sources = min_unique_sources
-        self._min_edge_threshold = min_edge_threshold
-        self._min_confidence_threshold = min_confidence_threshold
-        self._spam_window_hours = spam_window_hours
-        self._min_odds_delta = min_odds_delta
+    def __init__(self, config: AlertGuardConfig | None = None) -> None:
+        """Initialise with a typed config object containing all alert thresholds."""
+        self._config = config or AlertGuardConfig()
 
     def check(
         self,
@@ -48,34 +45,36 @@ class AlertGuard:
         """Run all guards and return a GuardResult. All checks run; reasons accumulate."""
         reasons: list[str] = []
 
-        if len(evidence) < self._min_evidence_count:
-            reasons.append(f"Insufficient evidence: {len(evidence)} < {self._min_evidence_count}")
+        if len(evidence) < self._config.min_evidence_count:
+            reasons.append(f"Insufficient evidence: {len(evidence)} < {self._config.min_evidence_count}")
 
         if evidence:
             avg_reliability = sum(e.reliability_score for e in evidence) / len(evidence)
-            if avg_reliability < self._min_avg_reliability:
-                reasons.append(f"Low avg reliability: {avg_reliability:.2f} < {self._min_avg_reliability}")
+            if avg_reliability < self._config.min_avg_reliability:
+                reasons.append(f"Low avg reliability: {avg_reliability:.2f} < {self._config.min_avg_reliability}")
 
         now = datetime.now(timezone.utc)
-        cutoff = now - timedelta(hours=self._max_evidence_age_hours)
+        cutoff = now - timedelta(hours=self._config.max_evidence_age_hours)
         stale = [e for e in evidence if self._as_utc(e.timestamp) < cutoff]
         if len(stale) == len(evidence):
-            reasons.append(f"All evidence older than {self._max_evidence_age_hours}h")
+            reasons.append(f"All evidence older than {self._config.max_evidence_age_hours}h")
 
         unique_sources = len({e.source for e in evidence})
-        if unique_sources < self._min_unique_sources:
-            reasons.append(f"Insufficient source diversity: {unique_sources} < {self._min_unique_sources}")
+        if unique_sources < self._config.min_unique_sources:
+            reasons.append(f"Insufficient source diversity: {unique_sources} < {self._config.min_unique_sources}")
 
-        if forecast.edge_value is None or forecast.edge_value < self._min_edge_threshold:
-            reasons.append(f"Edge too small: {forecast.edge_value} < {self._min_edge_threshold}")
+        if forecast.edge_value is None or forecast.edge_value < self._config.min_edge_threshold:
+            reasons.append(f"Edge too small: {forecast.edge_value} < {self._config.min_edge_threshold}")
 
-        if forecast.confidence_score < self._min_confidence_threshold:
-            reasons.append(f"Confidence too low: {forecast.confidence_score:.2f} < {self._min_confidence_threshold}")
+        if forecast.confidence_score < self._config.min_confidence_threshold:
+            reasons.append(f"Confidence too low: {forecast.confidence_score:.2f} < {self._config.min_confidence_threshold}")
 
         if prior_alert_at is not None:
-            window = timedelta(hours=self._spam_window_hours)
-            if now - self._as_utc(prior_alert_at) < window and odds_delta < self._min_odds_delta:
-                reasons.append(f"Spam suppression: alerted within {self._spam_window_hours}h with no material odds change")
+            window = timedelta(hours=self._config.spam_window_hours)
+            if now - self._as_utc(prior_alert_at) < window and odds_delta < self._config.min_odds_delta:
+                reasons.append(
+                    f"Spam suppression: alerted within {self._config.spam_window_hours}h with no material odds change"
+                )
 
         return GuardResult(passed=len(reasons) == 0, reasons=reasons)
 

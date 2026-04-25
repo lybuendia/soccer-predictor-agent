@@ -228,7 +228,7 @@ Stores:
 ### 8.5 Vector memory (RAG layer)
 Structured data (fixtures, odds, forecasts, preferences) is stored in SQLite — exact lookup and relational queries are the right tool there. RAG is used specifically for the unstructured news and evidence layer, where fuzzy semantic retrieval adds genuine value.
 
-A local ChromaDB vector store holds ingested articles, injury reports, match previews, and prior reasoning summaries. The `ArticleIngester` runs on the daily scan schedule, fetches new soccer news, embeds content using `text-embedding-3-small`, and stores it in Chroma with team and match metadata as filters.
+A local ChromaDB vector store holds ingested articles, injury reports, match previews, and prior reasoning summaries. The `ArticleIngester` runs on the daily scan schedule, fetches new soccer news, embeds content using an injectable embedding provider (local Hugging Face by default, OpenAI as a swap path), and stores it in Chroma with team and match metadata as filters.
 
 At research time, the News/Context Agent queries Chroma alongside live web search:
 - **Live web search**: catches breaking news, same-day updates
@@ -380,7 +380,7 @@ Python is the implementation language for:
 SQLite is the structured memory and persistence layer for MVP: fixtures, odds, forecasts, evidence metadata, source reliability, and user preferences. All relational and exact-lookup data lives here.
 
 ### 11.5 ChromaDB (RAG layer)
-ChromaDB is the vector store for unstructured news and evidence content. Embeddings are generated with `text-embedding-3-small`. Collections are filtered by team and date at retrieval time. Production replacement is Pinecone or Weaviate via the same `VectorRepository` interface.
+ChromaDB is the vector store for unstructured news and evidence content. Embeddings are generated through an injectable provider interface so the project can use a local Hugging Face model for low-cost development and swap to OpenAI later if validation shows it improves retrieval quality. Collections are filtered by team and date at retrieval time. Production replacement is Pinecone or Weaviate via the same `VectorRepository` interface.
 
 ### 11.6 MCP — Tool Layer
 The data tools (fixture fetcher, odds fetcher, web search) are exposed as an **MCP server** using the official `mcp` Python SDK. The LangGraph agents are MCP clients. This separates tool implementation from agent logic and makes the tool layer independently reusable — a web dashboard, a mobile app, or Claude Desktop can connect to the same MCP server without any agent code.
@@ -540,17 +540,21 @@ That model would:
 
 **Phase 1 completion notes**
 
-The first implementation pass now includes the full core infrastructure scaffold: typed dataclasses, repository protocols, SQLite schema and repository, source reliability seed data, OpenAI and Claude provider adapters, football-data.org fixtures, The Odds API odds fetching, Tavily search, SMTP alerts, MCP tool exposure, Chroma vector storage, and environment-driven dependency wiring.
+The first implementation pass now includes the full core infrastructure scaffold: typed dataclasses, repository protocols, SQLite schema and repository, source reliability seed data, OpenAI and Claude provider adapters, football-data.org fixtures, The Odds API odds fetching, Tavily search, SMTP alerts, MCP tool exposure, Chroma vector storage, local/Hugging Face embedding support with an OpenAI swap path, and environment-driven dependency wiring.
 
-Final infrastructure fixes completed before the first commit:
+Key infrastructure refinements completed during validation:
 - `ArticleIngester` now searches recent team news, chunks result text with overlap, creates stable chunk IDs, and upserts typed `ArticleChunk` records.
-- `ChromaVectorRepository` now uses the injected OpenAI embedding function for both upserts and queries, and stores scalar team metadata that Chroma can filter reliably.
+- `ChromaVectorRepository` now uses an injected embedding provider for both upserts and queries, stores scalar team metadata that Chroma can filter reliably, and can switch between local Hugging Face and OpenAI embeddings without changing repository code.
 - The MCP server now returns JSON rather than Python repr strings, and `get_odds` accepts `home_team` and `away_team` to match `OddsFetcher`.
 - `AlertGuard` now normalizes timestamps to UTC before recency and spam-window checks.
 - `EmailAlertChannel` handles missing edge values defensively when rendering subjects and bodies.
-- `main.py` wires the OpenAI embedding adapter into Chroma and keeps provider selection behind `LLMProvider`.
+- `main.py` now keeps provider selection behind `LLMProvider` and `EmbeddingProvider`.
 
-Verification so far: `python3 -m compileall soccer_forecast_agent` passes in the local environment. Full runtime checks require Python 3.11+ plus real API credentials; the current shell default is Python 3.9.13.
+Current validation status:
+- `python -m compileall soccer_forecast_agent tests scripts` passes in the Python 3.11 virtual environment.
+- Core infrastructure tests pass for baseline analytics, feature extraction, alert guardrails, SQLite repository behavior, article ingestion, config defaults, and Chroma embedding-provider injection.
+- A local retrieval sanity check with six web-sourced sample article summaries and a Hugging Face sentence-transformers model produced relevant top results for team/topic queries such as Arsenal injuries, Chelsea poor form, Tottenham relegation danger, and Manchester City vs Arsenal title-clash context.
+- External-service production validation is still pending for live fixture/odds/search/email workflows.
 
 ---
 
@@ -558,10 +562,19 @@ Verification so far: `python3 -m compileall soccer_forecast_agent` passes in the
 
 - [x] `SimpleBaselineStrategy.compute()` — form + goals baseline — `analytics/baseline.py`
 - [x] `FeatureExtractor.extract()` — builds `MatchContext` — `analytics/features.py`
-- [ ] `StatsMarketAgent.run()` — fetch fixtures + odds + compute baseline — `agents/stats_market.py`
-- [ ] Historical match data ingestion (for form and goals averages)
-- [ ] Unit tests for baseline strategy — `tests/test_baseline.py`
-- [ ] Unit tests for feature extractor — `tests/test_features.py`
+- [x] `StatsMarketAgent.run()` — fetch fixtures + odds + compute baseline — `agents/stats_market.py`
+- [x] Historical match data ingestion (for form and goals averages)
+- [x] Unit tests for baseline strategy — `tests/test_baseline.py`
+- [x] Unit tests for feature extractor — `tests/test_features.py`
+
+**Phase 2 implementation notes**
+
+- Historical finished-match ingestion now runs through `FixtureFetcher.fetch_finished()` and `scripts/ingest_historical_matches.py`, storing resolved Premier League matches in SQLite for later feature extraction.
+- `SQLiteRepository.get_recent_finished()` now supplies recent team history directly to `StatsMarketAgent`.
+- `StatsMarketAgent.run()` now derives recent `W/D/L`, goals scored, and goals conceded from real stored match history instead of placeholder defaults.
+- A YAML-backed team-name normalization layer now canonicalizes variations such as `Arsenal FC`, `Arsenal`, `Man City`, and `Tottenham Hotspur` so fixture ingestion, odds matching, and manual inspection use consistent team identities across APIs.
+- Manual baseline validation using the historical SQLite store confirmed that teams with clearly different recent form produce different derived features and materially different baseline forecasts.
+- `SimpleBaselineStrategy` was refined with a conservative win-probability floor and renormalization so the 1X2 market avoids unrealistic zero-probability outcomes in lopsided recent-form cases.
 
 ---
 
