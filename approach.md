@@ -629,6 +629,19 @@ Current validation status:
 - [ ] Compare Dixon-Coles vs simple baseline on Brier score
 - [ ] Calibration plot and final comparison report
 
+---
+
+### Phase 8 — Scheduled Pipelines and Productionization
+
+- [ ] Refactor manual `scripts/` utilities into dedicated ingestion/workflow modules for runtime use
+- [ ] Separate developer-only inspection/debug scripts from scheduled data pipelines
+- [ ] Add scheduled refresh pipeline for upcoming fixtures and historical finished matches into SQLite
+- [ ] Add scheduled refresh pipeline for market odds updates
+- [ ] Add scheduled news ingestion pipeline for search -> chunk -> embed -> Chroma upsert
+- [ ] Add APScheduler or cron entry points for recurring ingestion and refresh jobs
+- [ ] Add structured logging and error handling for scheduled jobs
+- [ ] Document the production path for local jobs vs deployed scheduler execution
+
 ## 18. Final Recommendation
 
 The strongest realistic version of this project is a multi-agent soccer market intelligence assistant for Premier League matches that combines:
