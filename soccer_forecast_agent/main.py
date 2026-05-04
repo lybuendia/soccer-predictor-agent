@@ -32,13 +32,33 @@ from soccer_forecast_agent.agents.synthesis_alert import SynthesisAlertAgent
 from soccer_forecast_agent.agents.supervisor import SupervisorAgent
 
 
+class LocalMCPToolClient:
+    """Expose local tool instances behind a minimal MCP-like call_tool interface."""
+
+    def __init__(self, fixture_fetcher: FixtureFetcher, odds_fetcher: OddsFetcher, search_tool: WebSearchTool) -> None:
+        """Initialise with injected local tool instances."""
+        self._fixtures = fixture_fetcher
+        self._odds = odds_fetcher
+        self._search = search_tool
+
+    def call_tool(self, tool_name: str, arguments: dict) -> object:
+        """Dispatch a tool call to the appropriate local tool implementation."""
+        if tool_name == "get_fixtures":
+            return self._fixtures.fetch_upcoming(competition="PL", days_ahead=arguments.get("days_ahead", 7))
+        if tool_name == "get_odds":
+            return self._odds.fetch_odds(arguments["home_team"], arguments["away_team"])
+        if tool_name == "search_news":
+            return self._search.search(arguments["query"], arguments.get("max_results", 5))
+        raise ValueError(f"Unknown tool: {tool_name}")
+
+
 def build_llm_provider(config: Config) -> LLMProvider:
     """Instantiate the configured LLM provider based on LLM_PROVIDER env var."""
     if config.llm_provider == "openai":
-        return OpenAIProvider(openai.OpenAI(api_key=config.openai_api_key))
+        return OpenAIProvider(openai.OpenAI(api_key=config.openai_api_key), model=config.llm_model)
     if config.llm_provider == "claude":
         import anthropic
-        return ClaudeProvider(anthropic.Anthropic(api_key=config.anthropic_api_key))
+        return ClaudeProvider(anthropic.Anthropic(api_key=config.anthropic_api_key), model=config.llm_model)
     raise ValueError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
 
 
@@ -73,6 +93,7 @@ def main() -> None:
     fixture_fetcher = FixtureFetcher(config.football_data_api_key)
     odds_fetcher = OddsFetcher(config.odds_api_key)
     search_tool = WebSearchTool(config.search_api_key)
+    local_mcp_client = LocalMCPToolClient(fixture_fetcher, odds_fetcher, search_tool)
     ingester = ArticleIngester(search_tool, vector_repo)
     alert_channel = EmailAlertChannel(
         config.smtp_host, config.smtp_port, config.smtp_user, config.smtp_password, config.alert_email
@@ -86,7 +107,14 @@ def main() -> None:
     )
 
     stats_agent = StatsMarketAgent(fixture_fetcher, odds_fetcher, SimpleBaselineStrategy(), FeatureExtractor(), sql_repo)
-    news_agent = NewsContextAgent(llm, ToolDispatcher(None), vector_repo, sql_repo, sql_repo, config.react_max_steps)
+    news_agent = NewsContextAgent(
+        llm,
+        ToolDispatcher(local_mcp_client),
+        vector_repo,
+        sql_repo,
+        sql_repo,
+        config.react_max_steps,
+    )
     synthesis_agent = SynthesisAlertAgent(llm, alert_channel, sql_repo, guard, config.base_sensitivity)
 
     supervisor = SupervisorAgent(stats_agent, news_agent, synthesis_agent)
