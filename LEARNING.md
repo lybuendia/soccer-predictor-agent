@@ -345,13 +345,9 @@ That combination is what makes it more than a normal LLM app.
 
 ## 3. What Has Been Implemented So Far
 
-As of the current state of the project:
+As of the current state of the project, Phases 0 through 5 are complete and the full end-to-end pipeline has been validated on live data.
 
-- Phase 0 is complete
-- Phase 1 is complete
-- parts of Phase 2 and Phase 4 are started
-
-That means the project already has:
+That means the project now has:
 
 - the design documents
 - the package structure
@@ -366,16 +362,24 @@ That means the project already has:
 - an MCP server skeleton
 - guardrails
 - article ingestion into the vector store
-- the basic baseline analytics functions
+- the baseline analytics pipeline
+- the `StatsMarketAgent.run()` workflow
+- the `NewsContextAgent` ReAct research loop with dual retrieval
+- YAML-backed prompts for the research agent
+- `SynthesisAlertAgent.run()` — full log-odds adjustment, edge calculation, confidence scoring, rationale generation, guard check, and alert delivery
+- `InterpretedEvidence` — the synthesis-layer view of evidence with per-market directions and market weight
+- `SupervisorAgent.build_graph()` and `run()` — full LangGraph orchestration across all three agents
+- unit and live tests for all major agent workflows
+- `ConsoleAlertChannel` as a zero-config demo fallback
 
-What is not implemented yet are the agent workflows themselves, especially:
+The full pipeline has been validated end-to-end on real live data: 10 upcoming Premier League fixtures, 10/10 matching odds retrieved, all matches researched, all alerts generated with rationales.
 
-- `StatsMarketAgent.run()`
-- the ReAct loop in `NewsContextAgent`
-- `SynthesisAlertAgent.run()`
-- `SupervisorAgent.build_graph()` and `run()`
+What remains are stretch and evaluation pieces:
 
-That is normal. The foundation is supposed to come first.
+- Brier score evaluation pipeline after matches resolve
+- outcome tracking
+- notebook export (`demo.ipynb`)
+- advanced Dixon-Coles baseline (stretch)
 
 ## 4. Why the Project Was Built in Phases
 
@@ -401,6 +405,358 @@ So the current implementation follows a sensible order:
 7. add evaluation and notebook export
 
 This is a core engineering idea: **build from stable foundations upward**.
+
+## 6. How Phase 3 Was Implemented
+
+Phase 3 is the research layer of the system.
+
+Its job is not to predict the match directly. Its job is to gather qualitative evidence that can later adjust the statistical baseline.
+
+The main class is:
+
+- `soccer_forecast_agent/agents/news_context.py`
+
+The prompt source lives in:
+
+- `soccer_forecast_agent/prompts/news_context.yaml`
+- `soccer_forecast_agent/prompts/loader.py`
+
+### 6.1 The goal of `NewsContextAgent`
+
+`NewsContextAgent` is responsible for answering this question:
+
+**What non-statistical context matters for this match, and how should that context be stored as structured evidence?**
+
+Examples of that context:
+
+- injuries
+- lineup news
+- rotation
+- congestion
+- motivation
+- uncertainty
+
+The important design choice is that this agent does not compute probabilities.
+
+It only:
+
+1. gathers context
+2. structures it
+3. saves it for downstream use
+
+That is a very good example of single responsibility.
+
+### 6.2 What happens inside `run()`
+
+The `run()` method is the full Phase 3 workflow.
+
+It goes in this order:
+
+1. read `current_match_id` from shared state
+2. find the `Match` object for that id
+3. load the baseline forecast for that match
+4. seed prior context from the vector store
+5. extract structured evidence from the seeded context
+6. build the initial research prompt
+7. enter the ReAct loop
+8. if the model requests a tool, dispatch it
+9. convert tool output into structured evidence
+10. save the evidence
+11. stop when the evidence quality bar or step budget says to stop
+12. return updated state
+
+That means `run()` is coordinating a loop, not just making one LLM call.
+
+### 6.3 Step 1: seed context before live search
+
+Before the LLM starts deciding what to search for, the agent calls `_seed_context()`.
+
+This method:
+
+- builds a query from the home team and away team
+- searches the vector store with both teams as metadata filters
+- returns formatted text chunks
+
+Why this matters:
+
+- the agent should not start from zero every time
+- older but still relevant context can be useful
+- the system can avoid unnecessary searches if stored context is already enough
+
+This is the “retrieval before action” part of the design.
+
+### 6.4 Step 2: build the research prompt
+
+The research prompt is now stored in YAML instead of inline strings.
+
+The agent calls:
+
+- `render_news_context_research_messages(...)`
+
+That renderer creates:
+
+- a `system` message
+- a `user` message
+
+The user message includes:
+
+- match metadata
+- baseline probabilities
+- seeded vector context
+- a short preview of evidence already collected
+
+This is useful because the model is not just asked “find news.”
+
+It is shown:
+
+- what match it is working on
+- what the current baseline says
+- what evidence already exists
+
+So the model can reason about what information is still missing.
+
+### 6.5 Step 3: the ReAct loop itself
+
+The core ReAct step is implemented in `_react_step()`.
+
+ReAct means:
+
+1. reason about what is missing
+2. act by calling a tool if needed
+3. observe the result
+4. revise the next step
+
+In code, `_react_step()` does this:
+
+1. send the current messages plus tool definitions to `llm.chat_with_tools(...)`
+2. read the assistant text
+3. extract the first tool call if one exists
+4. return:
+   - `thought`
+   - `tool_name`
+   - `tool_args`
+
+So each loop iteration can result in one of two things:
+
+- the model decides to stop and only returns text
+- the model requests a tool call
+
+That is the key ReAct pattern:
+
+- **thought -> action request -> observation -> next thought**
+
+### 6.6 Step 4: tool dispatch
+
+If the model requests a tool, the agent uses `ToolDispatcher.dispatch()`.
+
+This dispatcher:
+
+- validates the tool name
+- calls the injected MCP client
+- serializes the result into JSON text
+
+Right now the important live research tool is:
+
+- `search_news`
+
+In the current local runtime path, `main.py` injects a small MCP-compatible adapter rather than a real remote MCP client.
+
+That adapter exposes `call_tool(...)` and forwards:
+
+- `search_news` to `WebSearchTool`
+- `get_fixtures` to `FixtureFetcher`
+- `get_odds` to `OddsFetcher`
+
+This matters because the MCP server object itself is not the same thing as an MCP client.
+
+So the practical MVP wiring is:
+
+- local tools
+- wrapped behind a client-like adapter
+- routed through `ToolDispatcher`
+
+This is useful because the LLM never directly reaches into tool code.
+
+Instead:
+
+- the agent gets a tool request
+- the dispatcher routes it
+- the tool result comes back as text
+
+That separation is cleaner and easier to test.
+
+### 6.7 Step 5: turn raw text into `EvidenceItem`
+
+This is one of the most important parts of Phase 3.
+
+The tool output itself is not yet structured evidence.
+
+It is just raw text or JSON-like content.
+
+So the agent calls `_extract_evidence()`.
+
+That method:
+
+1. uses a second prompt flow
+2. asks the model to return strict JSON only
+3. parses the JSON array
+4. validates allowed direction and market values
+5. looks up source reliability
+6. creates `EvidenceItem` dataclasses
+
+This is the point where unstructured retrieval becomes structured agent memory.
+
+That is a major concept in agent systems:
+
+- retrieval alone is not enough
+- the system must transform observations into a stable internal representation
+
+### 6.8 Step 6: stopping conditions
+
+The loop stops in `_should_stop()`.
+
+Right now the stopping logic is simple and intentionally conservative.
+
+It stops when:
+
+- `step >= max_steps`
+
+or when:
+
+- `len(evidence) >= min_evidence_count`
+- average reliability is at least `min_avg_reliability`
+
+This matters because agent loops need explicit stopping rules.
+
+Without stopping rules, the model can:
+
+- over-search
+- waste tokens
+- chase low-value evidence
+
+So the loop is not “let the LLM decide forever.”
+
+It is “let the LLM explore, but inside clear limits.”
+
+### 6.9 Step 7: persistence
+
+Every extracted evidence item is saved through `EvidenceRepository`.
+
+That means the output of the research loop is not just temporary text in memory.
+
+It becomes part of the system’s stored record.
+
+This is important for:
+
+- later synthesis
+- later evaluation
+- debugging
+- auditability
+
+### 6.10 Why there are two different prompts
+
+Phase 3 uses two prompt flows for a reason.
+
+The research prompt and the extraction prompt are not the same task.
+
+The research prompt is for:
+
+- deciding what is missing
+- deciding whether to use a tool
+- summarizing what matters
+
+The extraction prompt is for:
+
+- converting raw material into strict JSON evidence objects
+
+Keeping those tasks separate is cleaner because the model is being asked to do two different kinds of work.
+
+### 6.11 Why the prompts were moved to YAML
+
+Originally the prompts were inline in `news_context.py`.
+
+They were moved to:
+
+- `prompts/news_context.yaml`
+
+and rendered through:
+
+- `prompts/loader.py`
+
+That change matters because it:
+
+- separates prompt text from control flow
+- makes prompt iteration easier
+- makes prompt testing easier
+- keeps the agent code focused on orchestration logic
+
+This is a good example of refactoring for maintainability, not just correctness.
+
+### 6.12 How Phase 3 was validated
+
+Phase 3 was not validated with only one kind of test.
+
+It was validated in layers.
+
+#### Unit and fake-based tests
+
+`tests/test_news_context.py` checks:
+
+- tool dispatch
+- vector seeding
+- stopping rules
+- full fake-driven `run()` behavior
+- malformed JSON handling
+- unknown tool handling
+- evidence save failure handling
+
+These tests answer:
+
+- does the code behave correctly?
+
+#### Live provider smoke tests
+
+`tests/test_live_llm_provider.py` checks:
+
+- real `chat()` behavior
+- real `chat_with_tools()` behavior
+
+These tests answer:
+
+- can the provider really talk to the selected model?
+
+#### Live `NewsContextAgent` smoke test
+
+`tests/test_live_news_context.py` checks:
+
+- real model in the loop
+- controlled vector input
+- controlled tool result
+- structured evidence output
+
+This answers:
+
+- can the real model actually complete the research-agent workflow?
+
+### 6.13 What is still left after Phase 3
+
+Phase 3 proves that the research loop works.
+
+It does not yet prove that the whole product is finished.
+
+The next stages still need:
+
+- synthesis of baseline plus evidence
+- edge calculation
+- alert decisions
+- orchestration across agents
+- evaluation after matches resolve
+
+So the right mental model is:
+
+- Phase 2 gave the system its first estimate
+- Phase 3 gave the system the ability to research context
+- Phase 4 will combine those two things into a forecast decision
 
 ## 5. Core Architectural Concepts
 
@@ -927,32 +1283,169 @@ That means:
 
 Even though the agent methods are not fully implemented yet, the existence of this wiring is important because it proves the architecture has a coherent shape.
 
-## 18. Why Some Agent Files Are Still Incomplete
+## 18. All Agent Files Are Now Complete
 
-You will notice there are still `NotImplementedError` markers in:
+All four agent files are now fully implemented:
 
-- `agents/stats_market.py`
-- `agents/news_context.py`
-- `agents/supervisor.py`
-- `agents/synthesis_alert.py`
+- `agents/stats_market.py` — fixtures, odds, baseline, populates `pending_match_ids`
+- `agents/news_context.py` — ReAct research loop, dual retrieval, structured evidence extraction
+- `agents/synthesis_alert.py` — log-odds adjustment, edge calculation, confidence scoring, alert decision
+- `agents/supervisor.py` — LangGraph graph, match-loop routing, full pipeline orchestration
 
-That does not mean the project is broken.
+The project has been validated end-to-end on live Premier League data.
 
-It means the implementation is following the roadmap:
+The phases that built toward this:
 
-- first the infrastructure
-- then the orchestration and decision logic
+1. defined the data structures and interfaces so agent code had something stable to depend on
+2. implemented tools and repositories before agent logic so agents were never blocked by missing infrastructure
+3. implemented agents bottom-up: stats first, research second, synthesis third, orchestration last
 
-This is actually a healthy way to build the system.
+This bottom-up order is the right way to build systems with dependencies.
 
-It is easier to implement agent behavior once:
+## 19. How Phase 4 Was Implemented
 
-- tools already work
-- repositories already work
-- models already exist
-- configuration is stable
+Phase 4 is the decision layer of the system.
 
-## 19. What Decisions Were Made During Implementation
+Its job is to combine the statistical baseline with qualitative evidence, decide whether a meaningful edge exists, and either send an alert or withhold it with an explanation.
+
+### The `InterpretedEvidence` split
+
+The most important Phase 4 design decision was separating two distinct concepts that were initially one.
+
+`EvidenceItem` is the stored record. It lives in SQLite. It describes what was found and where.
+
+`InterpretedEvidence` is the synthesis-layer view. It has `winner_direction`, `goals_direction`, and `market_weight`. It is produced by the news agent at evidence extraction time and lives only in workflow state — not in the database.
+
+Why this split matters:
+
+- the synthesis agent only needs to know direction and weight, not the full provenance details
+- storing synthesis semantics in the evidence record would mix two layers of meaning
+- each layer has a single, clear job
+
+### Market-specific direction fields
+
+The old design used a single `direction` field ("home_positive", "away_positive", "neutral", "uncertainty") for all markets.
+
+That was a bug waiting to happen.
+
+An injury to the away team's striker is `away_positive` for the winner market (home more likely to win) but it might also push toward `under_positive` for the goals market (fewer away goals expected).
+
+The fix was to add:
+
+- `winner_direction` — which winner outcome does this evidence favor?
+- `goals_direction` — does this evidence push toward more or fewer goals?
+
+That change made it possible to apply evidence correctly to each market independently.
+
+### Market scope enforcement
+
+The news agent now enforces that evidence flagged as `applies_to_market="winner"` cannot move the goals market.
+
+This is important because the LLM might return `applies_to_market="winner"` but also populate `goals_direction="over_positive"`. Without enforcement, that would move both markets even though the evidence was only meant for one.
+
+The fix is simple: if `market == "winner"`, force `goals_direction = "neutral"`. If `market == "goals"`, force `winner_direction = "neutral"`.
+
+### Market weight
+
+Evidence that explicitly applies to both markets is weighted at 1.0. Single-market evidence is discounted to 0.7.
+
+Why:
+
+- "both" evidence (like a red card or high-profile injury) is directly relevant to every market
+- single-market evidence is less universally informative
+- discounting prevents single-market observations from having the same influence as broader signals
+
+### The `draw_positive` heuristic
+
+The log-odds adjustment formula operates on individual markets independently — home win, away win, over, under.
+
+There is no "draw log-odds axis."
+
+To increase the draw probability, the system reduces both home and away win log-odds by 0.5 while keeping the raw draw probability fixed. After renormalization, draw's share of the winner market rises.
+
+This is explicitly documented as a heuristic in the code, not a principled probability update. A future improvement would be a direct draw-log-odds axis.
+
+### Immutable forecast construction
+
+The `Forecast` dataclass is frozen. It cannot be mutated after creation.
+
+But in synthesis, there are two moments when the forecast changes:
+
+1. the rationale is updated to include guard failure reasons
+2. `alert_sent` is set after the alert attempt
+
+The fix was to use `dataclasses.replace()` twice:
+
+- first to build a corrected-rationale forecast before sending
+- second to attach the `alert_sent` result before persisting
+
+This ensures the persisted record and the sent payload are always consistent, and frozen-ness is never bypassed.
+
+---
+
+## 20. How Phase 5 Was Implemented
+
+Phase 5 is the orchestration layer.
+
+Its job is to connect the three agents into a repeatable workflow that processes every fixture in one run.
+
+### The LangGraph graph shape
+
+The graph has four nodes:
+
+1. `stats_market` — fetches all fixtures, odds, and baselines for the competition; sets `pending_match_ids`
+2. `setup_next_match` — pops the next match ID from `pending_match_ids`, resets per-match state
+3. `news_context` — runs the ReAct loop for the current match
+4. `synthesis` — runs synthesis and alert for the current match, appends to `all_forecasts`
+
+The routing logic is simple:
+
+- after `setup_next_match`, if `current_match_id` is set → go to `news_context`
+- if `pending_match_ids` is empty → go to `END`
+- after `synthesis` → always go back to `setup_next_match`
+
+This creates a match-processing loop. Each iteration handles one fixture completely before moving to the next.
+
+### Why per-match state must be reset
+
+The graph state is shared across all iterations.
+
+If `evidence_items`, `interpreted_evidence`, and `forecast` were carried forward, each new match would start with the previous match's evidence. The synthesis agent would combine evidence from two different fixtures.
+
+`setup_next_match` resets these fields to `[]` and `None` before each iteration.
+
+### Fixing the ReAct message loop
+
+When the OpenAI API is used for tool calling, the message history must follow a strict structure:
+
+1. the assistant message must include the `tool_calls` array
+2. the tool response must include a `tool_call_id` matching the call
+
+The original code was reconstructing the assistant message from only the text content, throwing away `tool_calls`. It was also adding a `role: "tool"` message without a `tool_call_id`. The API rejected this with a `BadRequestError`.
+
+The fix required the provider to own message formatting, since the two APIs (OpenAI and Anthropic) need different shapes:
+
+- `format_assistant_turn(response)` — returns the raw response dict for OpenAI; wraps content list as an assistant message for Anthropic
+- `format_tool_result(tool_call_id, content)` — returns `role: "tool"` with `tool_call_id` for OpenAI; returns `role: "user"` with `type: "tool_result"` for Anthropic
+
+These two methods were added to the `LLMProvider` protocol and implemented in both adapters.
+
+This is a good example of the Dependency Inversion principle: the `NewsContextAgent` does not know or care which provider is active. It calls the protocol methods and the adapters handle the provider-specific formatting.
+
+### Team name matching between APIs
+
+football-data.org and the-odds-api.com use different team name strings for the same clubs.
+
+For example:
+- "Brentford FC" (football-data) vs "Brentford" (odds-api)
+- "AFC Bournemouth" (football-data) vs "Bournemouth" (odds-api)
+- "Forest" (football-data) vs "Nottingham Forest" (odds-api)
+
+The `TeamNameNormalizer` handles this by canonicalizing both names before comparison. But there was a second bug: `_best_h2h` was using football-data names to look up bookmaker outcome prices, while the outcome keys use odds-API names.
+
+The fix: `fetch_odds` now passes `event["home_team"]` and `event["away_team"]` to `_parse_odds` instead of the football-data names. This ensures outcome lookup always uses the name the API itself provided.
+
+---
 
 Here are the most important concrete decisions made so far.
 
@@ -1004,45 +1497,41 @@ Reason:
 
 - prevent subtle runtime bugs in recency and spam checks
 
-## 20. What You Should Learn Next While Building
+## 21. What to Focus on for the Remaining Work
 
-The next implementation phases are a good chance to focus on these concepts.
+The core pipeline is done. Three areas remain before the project is fully complete.
 
-### Next concept: stateful orchestration
+### Evaluation pipeline
 
-When you implement `SupervisorAgent`, pay attention to:
+After matches resolve, the system needs to:
 
-- shared state
-- node responsibilities
-- routing
-- stopping rules
+- store final outcomes in the `matches` table
+- compare baseline and adjusted forecast probabilities to actual outcomes
+- compute Brier score across the resolved match set
+- compare baseline-only vs adjusted-only Brier score to measure whether the research agent improved calibration
 
-### Next concept: ReAct loops
+This is the only way to know if the system's adjustments were useful, not just plausible-sounding.
 
-When you implement `NewsContextAgent`, focus on:
+### Notebook export
 
-- how the model decides what information is missing
-- how tool results are fed back in
-- when the loop should stop
-- how evidence is structured
+The professor requires a single executed Jupyter notebook.
 
-### Next concept: probability adjustment
+`make_notebook.py` assembles `demo.ipynb` from the Python module source.
 
-When you implement `SynthesisAlertAgent.run()`, focus on:
+The notebook should demonstrate the full end-to-end flow in a way that is readable without running the code.
 
-- log-odds adjustment
-- renormalization
-- implied probability
-- edge calculation
-- guardrail enforcement
+### Output quality review
 
-### Next concept: evaluation
+The pipeline is working, but working correctly is not the same as working well.
 
-When you later add Brier score and resolved-match tracking, focus on:
+A manual review of 5–10 matches is worth doing:
 
-- calibration
-- outcome logging
-- baseline versus adjusted forecast comparison
+- are the evidence summaries accurate?
+- are the direction labels (`home_positive`, `over_positive`, etc.) sensible?
+- are the search queries the model generates specific to the match, or generic?
+- are the rationales coherent and match-specific?
+
+This review does not require code changes. It just requires reading the output carefully and deciding whether to tune prompts.
 
 ## 21. A Good Mental Model for the Whole System
 
@@ -1075,16 +1564,19 @@ That way, by the end of the project, this file becomes both:
 
 ## 23. Current Summary
 
-Right now, the project has a strong foundation.
+The project is fully operational.
 
-The most valuable thing completed so far is not a flashy demo. It is the structure:
+The end-to-end pipeline runs on live Premier League data:
 
-- clear data models
-- clean abstractions
-- persistence layers
-- tool layer
-- vector memory
-- guardrails
-- dependency wiring
+1. `StatsMarketAgent` fetches 10 upcoming fixtures, retrieves market odds for all 10 via `OddsFetcher`, and computes a form/goals baseline for each match
+2. `NewsContextAgent` runs a ReAct research loop per match, seeding from the vector store and then searching Tavily for recent news
+3. `SynthesisAlertAgent` applies log-odds adjustment from the interpreted evidence, calculates the best-edge market, scores confidence, generates a rationale via the LLM, and passes the result to `AlertGuard`
+4. `SupervisorAgent` loops through all fixtures in a single LangGraph run and collects all forecasts
 
-That structure is what will make the later agent implementation easier, cleaner, and more defensible in your final submission.
+The output is a list of `Forecast` objects — one per fixture — stored in SQLite with full provenance: baseline probabilities, adjusted probabilities, evidence items, rationale, edge market, edge value, confidence score, and whether an alert was sent.
+
+What remains:
+
+- evaluation after matches resolve (Brier score)
+- notebook export for submission
+- optional output quality review across representative matches

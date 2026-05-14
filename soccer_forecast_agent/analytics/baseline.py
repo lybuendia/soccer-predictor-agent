@@ -42,9 +42,16 @@ class SimpleBaselineStrategy:
 
         draw_weight = 0.26
         available_mass = 1 - draw_weight
-        home_win = max(raw_home * available_mass, self.WIN_PROBABILITY_FLOOR)
-        away_win = max(raw_away * available_mass, self.WIN_PROBABILITY_FLOOR)
-        home_win, away_win = self._renormalize_pair(home_win, away_win, available_mass)
+        raw_home_prob = raw_home * available_mass
+        raw_away_prob = raw_away * available_mass
+        if raw_away_prob < self.WIN_PROBABILITY_FLOOR:
+            away_win = self.WIN_PROBABILITY_FLOOR
+            home_win = available_mass - away_win
+        elif raw_home_prob < self.WIN_PROBABILITY_FLOOR:
+            home_win = self.WIN_PROBABILITY_FLOOR
+            away_win = available_mass - home_win
+        else:
+            home_win, away_win = raw_home_prob, raw_away_prob
         draw = draw_weight
 
         total_goals_est = (home_attack + away_defense + away_attack + home_defense) / 2
@@ -66,10 +73,3 @@ class SimpleBaselineStrategy:
         points = sum(self.RESULT_POINTS.get(r, 0) for r in results)
         return points / (len(results) * 3)
 
-    def _renormalize_pair(self, first: float, second: float, total: float) -> tuple[float, float]:
-        """Scale a two-probability pair so it sums to the requested total."""
-        pair_total = first + second
-        if pair_total == 0:
-            return total / 2, total / 2
-        scale = total / pair_total
-        return first * scale, second * scale

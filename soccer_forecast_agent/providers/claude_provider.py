@@ -41,3 +41,14 @@ class ClaudeProvider:
             **kwargs,
         )
         return {"content": [block.model_dump() for block in response.content], "stop_reason": response.stop_reason}
+
+    def format_assistant_turn(self, response: dict) -> dict:
+        """Wrap the content list as an assistant message for Anthropic message history."""
+        return {"role": "assistant", "content": response.get("content", [])}
+
+    def format_tool_result(self, tool_call_id: str, content: str) -> dict:
+        """Build an Anthropic tool_result user message."""
+        return {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": content}],
+        }

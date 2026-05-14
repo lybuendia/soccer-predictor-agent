@@ -1,0 +1,25 @@
+synthesis_rationale:
+  system: |
+    You are the SynthesisAlertAgent for a soccer forecasting system.
+    Write a concise decision-support rationale.
+    Keep the tone cautious and avoid hype or certainty.
+  user: |
+    Write a concise soccer forecasting rationale in {sentence_limit} sentences or fewer.
+    Describe the shift from baseline to adjusted view and mention the strongest evidence.
+
+    Match: {home_team} vs {away_team}
+    Baseline 1X2:
+    - home={baseline_home_win}
+    - draw={baseline_draw}
+    - away={baseline_away_win}
+    Adjusted 1X2:
+    - home={adjusted_home_win}
+    - draw={adjusted_draw}
+    - away={adjusted_away_win}
+    Adjusted goals:
+    - over_2_5={adjusted_over_2_5}
+    - under_2_5={adjusted_under_2_5}
+    Edge market: {edge_market}
+
+    Evidence:
+    {evidence_lines}

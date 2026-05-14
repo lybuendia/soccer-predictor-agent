@@ -31,7 +31,8 @@ class OddsFetcher:
         event = self._find_event(events, home_team, away_team)
         if event is None:
             return None
-        return self._parse_odds(event, home_team, away_team)
+        # Use the event's own team name strings for bookmaker outcome lookup — they match the API's outcome names.
+        return self._parse_odds(event, event["home_team"], event["away_team"])
 
     def fetch_all_upcoming_odds(self) -> list[MarketOdds]:
         """Return MarketOdds for all currently listed EPL events."""

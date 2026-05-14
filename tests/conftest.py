@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from soccer_forecast_agent.models.evidence import EvidenceItem
+from soccer_forecast_agent.models.evidence import EvidenceItem, InterpretedEvidence
 from soccer_forecast_agent.models.match import BaselineForecast, Forecast, Match, MarketOdds
 
 
@@ -61,6 +61,39 @@ def sample_forecast(sample_baseline: BaselineForecast) -> Forecast:
         alert_sent=False,
         rationale="Home side has stronger form and better recent attacking output.",
     )
+
+
+@pytest.fixture
+def recent_interpreted_evidence() -> list[InterpretedEvidence]:
+    return [
+        InterpretedEvidence(
+            evidence_id="ie1",
+            source="bbc.co.uk",
+            reliability_score=0.8,
+            winner_direction="home_positive",
+            goals_direction="neutral",
+            market_weight=0.7,
+            summary="Positive squad availability for the home team.",
+        ),
+        InterpretedEvidence(
+            evidence_id="ie2",
+            source="premierleague.com",
+            reliability_score=0.9,
+            winner_direction="home_positive",
+            goals_direction="neutral",
+            market_weight=0.7,
+            summary="Official training update confirms expected starters.",
+        ),
+        InterpretedEvidence(
+            evidence_id="ie3",
+            source="skysports.com",
+            reliability_score=0.7,
+            winner_direction="neutral",
+            goals_direction="neutral",
+            market_weight=1.0,
+            summary="Match preview points to sustained attacking form.",
+        ),
+    ]
 
 
 @pytest.fixture

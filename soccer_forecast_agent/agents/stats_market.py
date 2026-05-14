@@ -64,6 +64,7 @@ class StatsMarketAgent:
             "matches": matches,
             "odds_map": odds_map,
             "baseline_forecasts": baseline_forecasts,
+            "pending_match_ids": list(baseline_forecasts.keys()),
             "errors": errors,
         }
 

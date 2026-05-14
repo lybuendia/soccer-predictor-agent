@@ -35,3 +35,11 @@ class OpenAIProvider:
             **kwargs,
         )
         return response.choices[0].message.model_dump()
+
+    def format_assistant_turn(self, response: dict) -> dict:
+        """Return the response dict as-is; OpenAI messages are already in the correct history shape."""
+        return response
+
+    def format_tool_result(self, tool_call_id: str, content: str) -> dict:
+        """Build an OpenAI tool-role message with the required tool_call_id."""
+        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}

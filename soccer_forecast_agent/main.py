@@ -24,11 +24,11 @@ from soccer_forecast_agent.tools.fixtures import FixtureFetcher
 from soccer_forecast_agent.tools.odds import OddsFetcher
 from soccer_forecast_agent.tools.search import WebSearchTool
 from soccer_forecast_agent.tools.ingester import ArticleIngester
-from soccer_forecast_agent.tools.email_sender import EmailAlertChannel
+from soccer_forecast_agent.tools.email_sender import ConsoleAlertChannel, EmailAlertChannel
 from soccer_forecast_agent.guardrails.alert_guard import AlertGuard, AlertGuardConfig
 from soccer_forecast_agent.agents.stats_market import StatsMarketAgent
 from soccer_forecast_agent.agents.news_context import NewsContextAgent, ToolDispatcher
-from soccer_forecast_agent.agents.synthesis_alert import SynthesisAlertAgent
+from soccer_forecast_agent.agents.synthesis_alert import SynthesisAlertAgent, SynthesisTuning
 from soccer_forecast_agent.agents.supervisor import SupervisorAgent
 
 
@@ -95,8 +95,11 @@ def main() -> None:
     search_tool = WebSearchTool(config.search_api_key)
     local_mcp_client = LocalMCPToolClient(fixture_fetcher, odds_fetcher, search_tool)
     ingester = ArticleIngester(search_tool, vector_repo)
-    alert_channel = EmailAlertChannel(
-        config.smtp_host, config.smtp_port, config.smtp_user, config.smtp_password, config.alert_email
+    smtp_configured = bool(config.smtp_user and config.smtp_password and config.alert_email)
+    alert_channel = (
+        EmailAlertChannel(config.smtp_host, config.smtp_port, config.smtp_user, config.smtp_password, config.alert_email)
+        if smtp_configured
+        else ConsoleAlertChannel()
     )
     guard = AlertGuard(
         AlertGuardConfig(
@@ -115,7 +118,10 @@ def main() -> None:
         sql_repo,
         config.react_max_steps,
     )
-    synthesis_agent = SynthesisAlertAgent(llm, alert_channel, sql_repo, guard, config.base_sensitivity)
+    synthesis_agent = SynthesisAlertAgent(
+        llm, alert_channel, sql_repo, guard,
+        tuning=SynthesisTuning(base_sensitivity=config.base_sensitivity),
+    )
 
     supervisor = SupervisorAgent(stats_agent, news_agent, synthesis_agent)
     supervisor.run(competition="PL", days_ahead=7)

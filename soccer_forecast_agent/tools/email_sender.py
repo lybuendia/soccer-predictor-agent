@@ -1,4 +1,4 @@
-"""Email alert channel — sends formatted alert emails via SMTP with STARTTLS."""
+"""Alert channel implementations — SMTP email and console fallback."""
 
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -92,3 +92,19 @@ class EmailAlertChannel:
         ]
 
         return "\n".join(lines)
+
+
+class ConsoleAlertChannel:
+    """Prints alert payloads to stdout — used when SMTP is not configured."""
+
+    def send(self, payload: AlertPayload) -> bool:
+        """Print the alert to stdout and return True."""
+        m = payload.match
+        f = payload.forecast
+        print(f"\n{'=' * 60}")
+        print(f"ALERT: {m.home_team} vs {m.away_team}")
+        print(f"Edge: {f.edge_market} ({(f.edge_value or 0.0):+.1%})  |  Confidence: {f.confidence_score:.1%}")
+        print(f"Adjusted: home={f.adjusted_home_win:.1%}  draw={f.adjusted_draw:.1%}  away={f.adjusted_away_win:.1%}")
+        print(f"Rationale: {payload.rationale}")
+        print(f"{'=' * 60}\n")
+        return True

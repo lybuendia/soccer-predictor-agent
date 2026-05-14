@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from soccer_forecast_agent.agents.supervisor import GraphState
 from soccer_forecast_agent.memory.repository import VectorRepository, EvidenceRepository, SourceReliabilityRepository
-from soccer_forecast_agent.models.evidence import ArticleChunk, EvidenceItem
+from soccer_forecast_agent.models.evidence import ArticleChunk, EvidenceItem, InterpretedEvidence
 from soccer_forecast_agent.models.match import BaselineForecast, Match
 from soccer_forecast_agent.prompts.loader import (
     render_news_context_evidence_messages,
@@ -80,6 +80,9 @@ class NewsContextAgent:
 
     VALID_DIRECTIONS = {"home_positive", "away_positive", "neutral", "uncertainty"}
     VALID_MARKETS = {"winner", "goals", "both"}
+    VALID_WINNER_DIRECTIONS = {"home_positive", "away_positive", "draw_positive", "neutral", "uncertainty"}
+    VALID_GOALS_DIRECTIONS = {"over_positive", "under_positive", "neutral", "uncertainty"}
+    MARKET_WEIGHTS = {"both": 1.0, "winner": 0.7, "goals": 0.7}
 
     def __init__(
         self,
@@ -121,10 +124,11 @@ class NewsContextAgent:
             return {**state, "errors": errors}
 
         forecast_id = state["forecast"].forecast_id if state.get("forecast") else current_match_id
-        evidence_items = list(state.get("evidence_items", []))
+        evidence_items: list[EvidenceItem] = list(state.get("evidence_items", []))
+        interpreted_items: list[InterpretedEvidence] = list(state.get("interpreted_evidence", []))
         seed_context = self._seed_context(match.home_team, match.away_team)
         if seed_context:
-            seeded_evidence = self._extract_evidence(
+            seeded_ev, seeded_interp = self._extract_evidence(
                 match=match,
                 baseline=baseline,
                 forecast_id=forecast_id,
@@ -132,19 +136,20 @@ class NewsContextAgent:
                 source_label="vector_seed",
                 max_items=max(1, self._min_evidence_count),
             )
-            evidence_items.extend(seeded_evidence)
-            self._persist_evidence(seeded_evidence, errors)
+            evidence_items.extend(seeded_ev)
+            interpreted_items.extend(seeded_interp)
+            self._persist_evidence(seeded_ev, errors)
 
         messages = self._build_messages(match=match, baseline=baseline, seed_context=seed_context, evidence=evidence_items)
 
         step = 0
         while not self._should_stop(evidence_items, step):
             step += 1
-            thought, tool_name, tool_args = self._react_step(messages, step)
-            messages.append({"role": "assistant", "content": thought})
+            thought, tool_name, tool_args, tool_call_id, raw_response = self._react_step(messages, step)
 
             if tool_name is None or tool_args is None:
-                final_evidence = self._extract_evidence(
+                messages.append({"role": "assistant", "content": thought})
+                final_ev, final_interp = self._extract_evidence(
                     match=match,
                     baseline=baseline,
                     forecast_id=forecast_id,
@@ -152,9 +157,12 @@ class NewsContextAgent:
                     source_label="assistant_summary",
                     max_items=1,
                 )
-                evidence_items.extend(final_evidence)
-                self._persist_evidence(final_evidence, errors)
+                evidence_items.extend(final_ev)
+                interpreted_items.extend(final_interp)
+                self._persist_evidence(final_ev, errors)
                 break
+
+            messages.append(self._llm.format_assistant_turn(raw_response))
 
             try:
                 observation = self._dispatcher.dispatch(tool_name, tool_args)
@@ -162,14 +170,8 @@ class NewsContextAgent:
                 errors.append(f"Tool dispatch failed for {tool_name}: {exc}")
                 break
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_name": tool_name,
-                    "content": observation,
-                }
-            )
-            extracted = self._extract_evidence(
+            messages.append(self._llm.format_tool_result(tool_call_id or "", observation))
+            extracted_ev, extracted_interp = self._extract_evidence(
                 match=match,
                 baseline=baseline,
                 forecast_id=forecast_id,
@@ -177,12 +179,14 @@ class NewsContextAgent:
                 source_label=tool_name,
                 max_items=2,
             )
-            evidence_items.extend(extracted)
-            self._persist_evidence(extracted, errors)
+            evidence_items.extend(extracted_ev)
+            interpreted_items.extend(extracted_interp)
+            self._persist_evidence(extracted_ev, errors)
 
         return {
             **state,
             "evidence_items": evidence_items,
+            "interpreted_evidence": interpreted_items,
             "errors": errors,
         }
 
@@ -192,8 +196,8 @@ class NewsContextAgent:
         chunks = self._vector.search(query=query, teams=[home_team, away_team], top_k=5)
         return [self._format_chunk(chunk) for chunk in chunks]
 
-    def _react_step(self, messages: list[dict], step: int) -> tuple[str, str | None, dict | None]:
-        """Run one ReAct step. Returns (thought, tool_name | None, tool_args | None)."""
+    def _react_step(self, messages: list[dict], step: int) -> tuple[str, str | None, dict | None, str | None, dict]:
+        """Run one ReAct step. Returns (thought, tool_name, tool_args, tool_call_id, raw_response)."""
         response = self._llm.chat_with_tools(
             messages=messages,
             tools=self.TOOLS,
@@ -201,10 +205,10 @@ class NewsContextAgent:
             max_tokens=400,
         )
         thought = self._extract_assistant_text(response) or f"Step {step}: no additional reasoning returned."
-        tool_name, tool_args = self._extract_tool_call(response)
-        return thought, tool_name, tool_args
+        tool_name, tool_args, tool_call_id = self._extract_tool_call(response)
+        return thought, tool_name, tool_args, tool_call_id, response
 
-    def _should_stop(self, evidence: list, step: int) -> bool:
+    def _should_stop(self, evidence: list[EvidenceItem], step: int) -> bool:
         """Return True if stopping conditions are met: budget exhausted or sufficient quality evidence collected."""
         if step >= self._max_steps:
             return True
@@ -248,20 +252,23 @@ class NewsContextAgent:
             return "\n".join(text for text in texts if text).strip()
         return response.get("content", "") or ""
 
-    def _extract_tool_call(self, response: dict) -> tuple[str | None, dict | None]:
-        """Return the first tool call from an LLM response, normalised across providers."""
+    def _extract_tool_call(self, response: dict) -> tuple[str | None, dict | None, str | None]:
+        """Return (tool_name, tool_args, tool_call_id) from an LLM response, normalised across providers."""
         tool_calls = response.get("tool_calls") or []
         if tool_calls:
-            function_call = tool_calls[0]["function"]
+            call = tool_calls[0]
+            function_call = call["function"]
             arguments = function_call.get("arguments", {})
             if isinstance(arguments, str):
                 arguments = json.loads(arguments)
-            return function_call["name"], arguments
+            return function_call["name"], arguments, call.get("id")
 
-        for block in response.get("content", []):
-            if block.get("type") == "tool_use":
-                return block["name"], block.get("input", {})
-        return None, None
+        content = response.get("content", [])
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    return block["name"], block.get("input", {}), block.get("id")
+        return None, None, None
 
     def _extract_evidence(
         self,
@@ -271,8 +278,8 @@ class NewsContextAgent:
         source_material: str,
         source_label: str,
         max_items: int,
-    ) -> list[EvidenceItem]:
-        """Convert raw retrieved material into structured EvidenceItem objects via the LLM."""
+    ) -> tuple[list[EvidenceItem], list[InterpretedEvidence]]:
+        """Convert raw retrieved material into structured EvidenceItem and InterpretedEvidence pairs via the LLM."""
         response = self._llm.chat(
             messages=render_news_context_evidence_messages(
                 match=match,
@@ -285,31 +292,56 @@ class NewsContextAgent:
             max_tokens=600,
         )
         items = self._parse_json_array(response)
-        evidence: list[EvidenceItem] = []
+        pairs: list[tuple[EvidenceItem, InterpretedEvidence]] = []
         for item in items[:max_items]:
             source = str(item.get("source", "")).strip() or source_label
             url = str(item.get("url", "")).strip()
             direction = str(item.get("direction", "uncertainty")).strip()
             market = str(item.get("applies_to_market", "both")).strip()
+            winner_direction = str(item.get("winner_direction", "neutral")).strip()
+            goals_direction = str(item.get("goals_direction", "neutral")).strip()
             if direction not in self.VALID_DIRECTIONS:
                 direction = "uncertainty"
             if market not in self.VALID_MARKETS:
                 market = "both"
+            if winner_direction not in self.VALID_WINNER_DIRECTIONS:
+                winner_direction = "neutral"
+            if goals_direction not in self.VALID_GOALS_DIRECTIONS:
+                goals_direction = "neutral"
+            # Enforce market scope: suppress directions that contradict applies_to_market
+            # so a malformed LLM response cannot move the wrong market's probability.
+            if market == "winner":
+                goals_direction = "neutral"
+            elif market == "goals":
+                winner_direction = "neutral"
             domain = self._source_domain(source=source, url=url)
-            evidence.append(
-                EvidenceItem(
-                    evidence_id=str(uuid4()),
-                    forecast_id=forecast_id,
-                    source=domain or source,
-                    url=url,
-                    timestamp=datetime.now(timezone.utc),
-                    summary=str(item.get("summary", "")).strip()[:500],
-                    direction=direction,
-                    reliability_score=self._source_reliability.get_score(domain or source),
-                    applies_to_market=market,
-                )
+            canonical_source = domain or source
+            evidence_id = str(uuid4())
+            summary = str(item.get("summary", "")).strip()[:500]
+            reliability = self._source_reliability.get_score(canonical_source)
+            ev = EvidenceItem(
+                evidence_id=evidence_id,
+                forecast_id=forecast_id,
+                source=canonical_source,
+                url=url,
+                timestamp=datetime.now(timezone.utc),
+                summary=summary,
+                direction=direction,
+                reliability_score=reliability,
+                applies_to_market=market,
             )
-        return [item for item in evidence if item.summary]
+            interp = InterpretedEvidence(
+                evidence_id=evidence_id,
+                source=canonical_source,
+                reliability_score=reliability,
+                winner_direction=winner_direction,
+                goals_direction=goals_direction,
+                market_weight=self.MARKET_WEIGHTS.get(market, 0.7),
+                summary=summary,
+            )
+            pairs.append((ev, interp))
+        valid = [(ev, interp) for ev, interp in pairs if ev.summary]
+        return [ev for ev, _ in valid], [interp for _, interp in valid]
 
     def _parse_json_array(self, raw_text: str) -> list[dict]:
         """Parse a JSON array from a model response, tolerating fenced code blocks."""

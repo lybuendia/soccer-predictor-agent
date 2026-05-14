@@ -551,9 +551,10 @@ Key infrastructure refinements completed during validation:
 - `main.py` now keeps provider selection behind `LLMProvider` and `EmbeddingProvider`.
 
 Current validation status:
-- `python -m compileall soccer_forecast_agent tests scripts` passes in the Python 3.11 virtual environment.
+- `python -m compileall soccer_forecast_agent tests scripts` passes in the project Python 3.11 virtual environment.
 - Core infrastructure tests pass for baseline analytics, feature extraction, alert guardrails, SQLite repository behavior, article ingestion, config defaults, and Chroma embedding-provider injection.
 - A local retrieval sanity check with six web-sourced sample article summaries and a Hugging Face sentence-transformers model produced relevant top results for team/topic queries such as Arsenal injuries, Chelsea poor form, Tottenham relegation danger, and Manchester City vs Arsenal title-clash context.
+- In the local `.venv`, the offline automated suite currently passes with `37 passed, 3 deselected` when live-network LLM smoke tests are excluded.
 - External-service production validation is still pending for live fixture/odds/search/email workflows.
 
 ---
@@ -580,14 +581,27 @@ Current validation status:
 
 ### Phase 3 — ReAct Research Agent
 
-- [ ] `ToolDispatcher.dispatch()` — MCP client routing — `agents/news_context.py`
-- [ ] `NewsContextAgent._seed_context()` — vector pre-load before loop
-- [ ] `NewsContextAgent._react_step()` — single ReAct iteration
-- [ ] `NewsContextAgent._should_stop()` — stopping conditions
-- [ ] `NewsContextAgent.run()` — full loop wired to state
-- [ ] System prompt design for ReAct agent
-- [ ] Structured evidence extraction from LLM output
-- [ ] Unit tests for stopping conditions — `tests/test_news_context.py`
+- [x] `ToolDispatcher.dispatch()` — MCP client routing — `agents/news_context.py`
+- [x] `NewsContextAgent._seed_context()` — vector pre-load before loop
+- [x] `NewsContextAgent._react_step()` — single ReAct iteration
+- [x] `NewsContextAgent._should_stop()` — stopping conditions
+- [x] `NewsContextAgent.run()` — full loop wired to state
+- [x] System prompt design for ReAct agent
+- [x] Structured evidence extraction from LLM output
+- [x] YAML-backed prompt repository for Phase 3 prompts — `prompts/news_context.yaml`, `prompts/loader.py`
+- [x] Unit tests for stopping conditions and loop behavior — `tests/test_news_context.py`
+- [x] Live provider smoke test for `chat()` and `chat_with_tools()` — `tests/test_live_llm_provider.py`
+- [x] Live end-to-end smoke test for `NewsContextAgent.run()` with controlled retrieval/tool inputs — `tests/test_live_news_context.py`
+- [ ] Small manual quality review over 5–10 representative matches: summary quality, direction labeling, and search query quality
+
+**Phase 3 implementation notes**
+
+- The ReAct agent now performs dual retrieval in the intended order: vector-store seeding first, then live search only when additional evidence is needed.
+- The local runtime path now wires `NewsContextAgent` through a small MCP-compatible adapter in `main.py`, so tool calls from the ReAct loop can reach the real local `WebSearchTool` instead of failing on `ToolDispatcher(None)`.
+- Prompt text for the research loop and evidence extraction has been moved out of agent code into a YAML-backed prompt module so prompt tuning can happen without editing orchestration logic.
+- The live smoke tests now validate both provider-level tool calling and a real-model `NewsContextAgent.run()` path with controlled seeded context and controlled MCP search results.
+- Based on current validation, the main remaining Phase 3 risk is no longer wiring. It is output quality: whether evidence summaries, direction labels, and model-generated search queries remain sensible across a small set of representative matches.
+- A lightweight manual review is enough for Phase 3. Full prompt optimization, larger-scale prompt evaluation, and stricter query-style tuning can wait until Phase 4 and Phase 5, when this evidence is actually influencing forecast adjustments and alert decisions.
 
 ---
 
@@ -596,22 +610,55 @@ Current validation status:
 - [x] `SynthesisAlertAgent._adjust_probability()` — log-odds math
 - [x] `SynthesisAlertAgent._implied_probability()` — market conversion
 - [x] `EmailAlertChannel.send()` and `_render_body()` — `tools/email_sender.py`
-- [ ] `SynthesisAlertAgent.run()` — full synthesis + guard + alert
-- [ ] System prompt for synthesis agent
-- [ ] End-to-end alert flow test — `tests/test_alert_flow.py`
+- [x] `SynthesisAlertAgent.run()` — full synthesis + guard + alert
+- [x] System prompt for synthesis agent — `prompts/synthesis.yaml`
+- [x] Offline synthesis/alert flow coverage — `tests/test_synthesis_alert.py`
+- [x] `InterpretedEvidence` dataclass — synthesis-only semantic layer on top of stored `EvidenceItem`
+- [x] `SynthesisResult` typed intermediate — holds adjusted forecast, confidence, edge market, edge value
+- [x] Per-market direction fields (`winner_direction`, `goals_direction`) replacing single `direction`
+- [x] Market weight field (1.0 for "both", 0.7 for single-market evidence)
+- [x] Market scope enforcement in `_extract_evidence` — prevents LLM output from moving the wrong market
+- [x] `draw_positive` heuristic — reduces home and away log-odds by 0.5 so draw share rises after renormalization
+- [x] `dataclasses.replace` pattern for immutable `Forecast` construction — corrected rationale and alert_sent set before persist
+
+**Phase 4 implementation notes**
+
+- `SynthesisAlertAgent.run()` now validates state, adjusts baseline probabilities, converts market odds into overround-normalized implied probabilities, computes the strongest edge, assigns a confidence score, generates a rationale, evaluates `AlertGuard`, persists the resulting `Forecast`, and only sends an alert if the guardrails pass.
+- The current synthesis rationale path uses the injected `LLMProvider` with a deterministic fallback summary if the model call fails, so the forecast pipeline remains usable during partial outages or in restricted environments.
+- A dedicated `InterpretedEvidence` dataclass was introduced to separate synthesis semantics (market directions, market weight) from the stored `EvidenceItem` record. Evidence items are stored in SQLite; interpreted evidence is the synthesis-only view created at extraction time by the news agent.
+- Market scope enforcement ensures that evidence flagged as `applies_to_market="winner"` cannot move the goals market, and vice versa — this prevents malformed LLM output from contaminating the wrong market's probability.
+- The `draw_positive` treatment is a documented heuristic: because log-odds space has no direct draw axis, draw probability rises indirectly by reducing home and away, keeping raw draw constant, and relying on renormalization to increase draw's share.
+- Offline tests cover the happy path, the guard-failure path (forecast saved, alert withheld with audit rationale), draw_positive increasing draw share, and single-market discounting vs both-market evidence.
 
 ---
 
 ### Phase 5 — Orchestration and Evaluation
 
 - [x] `GraphState` TypedDict — `agents/supervisor.py`
-- [ ] `SupervisorAgent.build_graph()` — LangGraph nodes + edges
-- [ ] `SupervisorAgent.run()` — execute graph, return forecasts
+- [x] `SupervisorAgent.build_graph()` — LangGraph nodes + conditional edges
+- [x] `SupervisorAgent.run()` — execute graph, return all forecasts
+- [x] Match-loop pattern: `setup_next_match` node pops from `pending_match_ids`, resets per-match state
+- [x] `pending_match_ids` and `all_forecasts` added to `GraphState`
+- [x] `StatsMarketAgent` populates `pending_match_ids` from computed baselines
+- [x] `SynthesisAlertAgent` appends each forecast to `all_forecasts`
+- [x] Fixed ReAct message loop: `tool_calls` preserved in assistant history, `tool_call_id` passed with tool responses
+- [x] `format_assistant_turn` and `format_tool_result` added to `LLMProvider` protocol and both adapters
+- [x] Team name matching bug fixed in `OddsFetcher`: bookmaker outcome lookup now uses odds-API names, not football-data names
+- [x] Full `team_aliases.yaml` — added Brentford, Crystal Palace, Fulham, Bournemouth, Sunderland, fixed Forest → Nottingham Forest
+- [x] `ConsoleAlertChannel` — prints alerts to stdout when SMTP is not configured, used in demo and CI
+- [x] Full end-to-end pipeline validated: 10/10 PL fixtures processed, 10 alerts generated with rationales
 - [ ] Conditional edge: skip research if no baseline edge
 - [ ] `ArticleIngester` called on each daily scan in `main.py`
 - [ ] Outcome update after match resolves
 - [ ] Brier score evaluation pipeline — `analytics/evaluation.py`
 - [ ] Basic reporting: alert count, avg edge, abstention rate
+
+**Phase 5 implementation notes**
+
+- The LangGraph graph uses a match-loop pattern rather than fan-out: `stats_market → setup_next_match → news_context → synthesis → setup_next_match` (loop), exiting to END when `pending_match_ids` is empty. This gives sequential per-match processing with clean per-match state resets between iterations.
+- The ReAct message loop had a correctness bug: when the model made a tool call, the assistant message was reconstructed from extracted text, losing the `tool_calls` field, and tool responses lacked `tool_call_id`. The OpenAI API rejects both. The fix extended `LLMProvider` with `format_assistant_turn` and `format_tool_result`, implemented by each adapter in provider-specific formats (OpenAI uses `tool_call_id`; Anthropic uses `tool_result` inside a user message).
+- Team name matching between football-data.org and the-odds-api.com required two fixes: (1) `fetch_odds` now passes `event["home_team"]` / `event["away_team"]` to `_parse_odds` so bookmaker outcome lookup uses the API's own team name strings; (2) several PL clubs were missing from `team_aliases.yaml`.
+- `ConsoleAlertChannel` was added as a zero-config fallback for demo use when SMTP credentials are absent. `main.py` auto-selects it when `smtp_user` or `smtp_password` are empty.
 
 ---
 

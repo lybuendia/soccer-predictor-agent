@@ -18,3 +18,11 @@ class LLMProvider(Protocol):
     ) -> dict:
         """Send a conversation with tool definitions; return the raw response dict including any tool calls."""
         ...
+
+    def format_assistant_turn(self, response: dict) -> dict:
+        """Convert a raw chat_with_tools response into a message dict suitable for appending to history."""
+        ...
+
+    def format_tool_result(self, tool_call_id: str, content: str) -> dict:
+        """Build a tool-result message for appending to history after a tool was called."""
+        ...

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from soccer_forecast_agent.models.evidence import EvidenceItem
+from soccer_forecast_agent.models.evidence import EvidenceItem, InterpretedEvidence
 from soccer_forecast_agent.models.match import BaselineForecast, Match
 
 
@@ -85,6 +85,48 @@ def render_news_context_evidence_messages(
                 under_2_5=f"{baseline.under_2_5:.3f}",
                 source_label=source_label,
                 source_material=source_material,
+            ).strip(),
+        },
+    ]
+
+
+def render_synthesis_rationale_messages(
+    match: Match,
+    baseline: BaselineForecast,
+    adjusted: BaselineForecast,
+    interpreted: list[InterpretedEvidence],
+    edge_market: str | None,
+    evidence_limit: int,
+    sentence_limit: int,
+) -> list[dict[str, str]]:
+    """Render the YAML-backed synthesis rationale prompt into chat messages."""
+    prompts = _load_prompt_file("synthesis_alert")
+    section = prompts["synthesis_rationale"]
+    evidence_lines = (
+        "\n".join(
+            f"- {item.summary} [{item.source}]"
+            for item in interpreted[:evidence_limit]
+        )
+        or "- No evidence collected."
+    )
+    return [
+        {"role": "system", "content": section["system"].strip()},
+        {
+            "role": "user",
+            "content": section["user"].format(
+                sentence_limit=sentence_limit,
+                home_team=match.home_team,
+                away_team=match.away_team,
+                baseline_home_win=f"{baseline.home_win:.1%}",
+                baseline_draw=f"{baseline.draw:.1%}",
+                baseline_away_win=f"{baseline.away_win:.1%}",
+                adjusted_home_win=f"{adjusted.home_win:.1%}",
+                adjusted_draw=f"{adjusted.draw:.1%}",
+                adjusted_away_win=f"{adjusted.away_win:.1%}",
+                adjusted_over_2_5=f"{adjusted.over_2_5:.1%}",
+                adjusted_under_2_5=f"{adjusted.under_2_5:.1%}",
+                edge_market=edge_market or "none",
+                evidence_lines=evidence_lines,
             ).strip(),
         },
     ]

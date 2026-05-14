@@ -20,6 +20,19 @@ class EvidenceItem:
 
 
 @dataclass
+class InterpretedEvidence:
+    """Per-market directional interpretation of an EvidenceItem, produced by the LLM at extraction time."""
+
+    evidence_id: str
+    source: str
+    reliability_score: float
+    winner_direction: str   # "home_positive" | "away_positive" | "draw_positive" | "neutral" | "uncertainty"
+    goals_direction: str    # "over_positive" | "under_positive" | "neutral" | "uncertainty"
+    market_weight: float    # 1.0 if evidence applies to both markets, 0.7 if single-market
+    summary: str
+
+
+@dataclass
 class ArticleChunk:
     """A text chunk from an ingested article, stored in the vector store with team metadata."""
 

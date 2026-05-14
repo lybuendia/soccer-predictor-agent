@@ -25,9 +25,14 @@ evidence_extraction:
     You extract structured evidence for a soccer forecasting system and respond with JSON only.
   user: |
     Extract up to {max_items} soccer evidence items for the match {home_team} vs {away_team}.
-    Return strict JSON as an array. Each item must include: source, url, summary, direction, applies_to_market.
+    Return strict JSON as an array. Each item must include:
+      source, url, summary, direction, applies_to_market, winner_direction, goals_direction.
     Allowed direction values: home_positive, away_positive, neutral, uncertainty.
     Allowed applies_to_market values: winner, goals, both.
+    Allowed winner_direction values: home_positive, away_positive, draw_positive, neutral, uncertainty.
+    winner_direction: which winner outcome does this evidence favor? Use "neutral" if irrelevant to the winner market.
+    Allowed goals_direction values: over_positive, under_positive, neutral, uncertainty.
+    goals_direction: does this evidence push toward more goals (over_positive), fewer goals (under_positive), or neither?
     Only include items that are materially relevant to this specific match.
     If there is no useful evidence, return [].
 

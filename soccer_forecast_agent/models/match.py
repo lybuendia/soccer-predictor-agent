@@ -77,6 +77,16 @@ class MatchContext:
 
 
 @dataclass
+class SynthesisResult:
+    """Typed intermediate output of synthesis math, used to assemble the final Forecast."""
+
+    adjusted: BaselineForecast
+    confidence_score: float
+    edge_market: str | None
+    edge_value: float | None
+
+
+@dataclass
 class AlertPayload:
     """Everything needed to render and send an alert email."""
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from soccer_forecast_agent.agents.news_context import NewsContextAgent, ToolDispatcher
-from soccer_forecast_agent.models.evidence import ArticleChunk, EvidenceItem
+from soccer_forecast_agent.models.evidence import ArticleChunk, EvidenceItem, InterpretedEvidence
 
 
 @dataclass
@@ -75,6 +75,7 @@ def _base_state(sample_match, sample_baseline) -> dict:
         "baseline_forecasts": {sample_match.match_id: sample_baseline},
         "current_match_id": sample_match.match_id,
         "evidence_items": [],
+        "interpreted_evidence": [],
         "forecast": None,
         "alert_sent": False,
         "errors": [],
@@ -232,6 +233,8 @@ def test_news_context_agent_run_collects_and_saves_evidence(sample_match, sample
     assert len(result["evidence_items"]) == 2
     assert [item.source for item in result["evidence_items"]] == ["bbc.co.uk", "skysports.com"]
     assert all(item.forecast_id == sample_match.match_id for item in result["evidence_items"])
+    assert len(result["interpreted_evidence"]) == 2
+    assert all(isinstance(item, InterpretedEvidence) for item in result["interpreted_evidence"])
     assert len(evidence_repo.saved) == 2
     assert result["errors"] == []
     assert len(llm.tool_calls) == 2
@@ -341,3 +344,39 @@ def test_news_context_agent_records_evidence_save_failures(sample_match, sample_
     assert len(result["evidence_items"]) == 1
     assert result["errors"]
     assert result["errors"][0].startswith("Failed to save evidence ")
+
+
+def test_extract_evidence_suppresses_conflicting_market_directions(sample_match, sample_baseline) -> None:
+    # LLM returns applies_to_market="winner" but also a non-neutral goals_direction —
+    # the extracted InterpretedEvidence must zero out goals_direction to prevent
+    # winner-only evidence from moving the totals market.
+    conflicting_json = (
+        '[{"source":"bbc.co.uk","url":"https://bbc.co.uk/story",'
+        '"summary":"Home striker is fit.","direction":"home_positive",'
+        '"applies_to_market":"winner","winner_direction":"home_positive","goals_direction":"over_positive"}]'
+    )
+    llm = FakeLLM(tool_responses=[], chat_responses=[conflicting_json])
+    agent = NewsContextAgent(
+        llm=llm,
+        tool_dispatcher=ToolDispatcher(FakeMCPClient(result=[])),
+        vector_repo=FakeVectorRepository([]),
+        evidence_repo=FakeEvidenceRepository(),
+        source_reliability_repo=FakeSourceReliabilityRepository({"bbc.co.uk": 0.85}),
+        max_steps=1,
+        min_evidence_count=1,
+        min_avg_reliability=0.5,
+    )
+
+    _, interp_items = agent._extract_evidence(
+        match=sample_match,
+        baseline=sample_baseline,
+        forecast_id="forecast-1",
+        source_material=conflicting_json,
+        source_label="search_news",
+        max_items=1,
+    )
+
+    assert len(interp_items) == 1
+    item = interp_items[0]
+    assert item.winner_direction == "home_positive"
+    assert item.goals_direction == "neutral", "goals_direction must be suppressed for winner-only evidence"
