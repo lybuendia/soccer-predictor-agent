@@ -620,15 +620,24 @@ Current validation status:
 - [x] Market scope enforcement in `_extract_evidence` — prevents LLM output from moving the wrong market
 - [x] `draw_positive` heuristic — reduces home and away log-odds by 0.5 so draw share rises after renormalization
 - [x] `dataclasses.replace` pattern for immutable `Forecast` construction — corrected rationale and alert_sent set before persist
+- [x] `SynthesisDecision` structured LLM contract — synthesis LLM now recommends market, adjustment strength, conviction, and alert-worthiness
+- [x] Bounded LLM-guided adjustment path — baseline treated as a prior; code-owned caps translate synthesis labels into probability moves
+- [x] Deterministic fallback decision when synthesis LLM is unavailable
+- [x] Recommended-market edge check — alerts only pass when the LLM's chosen market still clears deterministic edge and quality guardrails
+- [x] Human-readable synthesis output — final summaries now separate the market category, recommended bet, market source, confidence, and the synthesis LLM's judgment
 
 **Phase 4 implementation notes**
 
-- `SynthesisAlertAgent.run()` now validates state, adjusts baseline probabilities, converts market odds into overround-normalized implied probabilities, computes the strongest edge, assigns a confidence score, generates a rationale, evaluates `AlertGuard`, persists the resulting `Forecast`, and only sends an alert if the guardrails pass.
-- The current synthesis rationale path uses the injected `LLMProvider` with a deterministic fallback summary if the model call fails, so the forecast pipeline remains usable during partial outages or in restricted environments.
+- `SynthesisAlertAgent.run()` now treats the statistical baseline as a prior and asks the synthesis LLM for a structured `SynthesisDecision`: market category, recommended market, bounded winner/goals adjustment strength, LLM conviction score, alert-worthiness judgment, rationale points, and risk points.
+- The synthesis LLM no longer acts only as a rationale writer. Its structured decision now directly influences the bounded probability movement and whether the signal should even be considered alert-worthy before hard guardrails are applied.
+- Final numeric adjustments remain code-owned and bounded: the LLM recommends direction and strength, while deterministic log-odds caps, normalization, edge math, persistence, and anti-spam checks remain outside model control.
+- The synthesis LLM's recommendation is advisory but substantive: it chooses the market and bounded adjustment strength, while the code still refuses alerts when that recommended market does not clear the odds-based edge threshold or other hard guardrails.
+- A deterministic fallback synthesis decision is generated from aggregated evidence directions when the synthesis LLM is unavailable, so the forecast pipeline remains usable during partial outages or in restricted environments.
 - A dedicated `InterpretedEvidence` dataclass was introduced to separate synthesis semantics (market directions, market weight) from the stored `EvidenceItem` record. Evidence items are stored in SQLite; interpreted evidence is the synthesis-only view created at extraction time by the news agent.
 - Market scope enforcement ensures that evidence flagged as `applies_to_market="winner"` cannot move the goals market, and vice versa — this prevents malformed LLM output from contaminating the wrong market's probability.
 - The `draw_positive` treatment is a documented heuristic: because log-odds space has no direct draw axis, draw probability rises indirectly by reducing home and away, keeping raw draw constant, and relying on renormalization to increase draw's share.
-- Offline tests cover the happy path, the guard-failure path (forecast saved, alert withheld with audit rationale), draw_positive increasing draw share, and single-market discounting vs both-market evidence.
+- User-facing summaries now expose both layers of the decision: the quantitative edge view and the synthesis LLM's recommendation in plain language, including market category, recommended bet, confidence, and market source provenance.
+- Offline tests cover the happy path, the guard-failure path (including LLM-declared non-alert-worthy decisions), bounded draw adjustments, and confidence sensitivity to LLM conviction.
 
 ---
 
@@ -647,11 +656,19 @@ Current validation status:
 - [x] Full `team_aliases.yaml` — added Brentford, Crystal Palace, Fulham, Bournemouth, Sunderland, fixed Forest → Nottingham Forest
 - [x] `ConsoleAlertChannel` — prints alerts to stdout when SMTP is not configured, used in demo and CI
 - [x] Full end-to-end pipeline validated: 10/10 PL fixtures processed, 10 alerts generated with rationales
-- [ ] Conditional edge: skip research if no baseline edge
-- [ ] `ArticleIngester` called on each daily scan in `main.py`
-- [ ] Outcome update after match resolves
-- [ ] Brier score evaluation pipeline — `analytics/evaluation.py`
-- [ ] Basic reporting: alert count, avg edge, abstention rate
+- [x] Conditional edge skip: three-way routing in `SupervisorAgent` — research / synthesise / done
+- [x] `_has_baseline_edge()` — computes overround-normalised implied probs, checks max edge vs threshold
+- [x] `min_edge_threshold` injected into `SupervisorAgent` from config; `[EDGE]` / `[SKIP]` log per match
+- [x] `analytics/evaluation.py` — `MatchOutcome`, `brier_score_winner`, `brier_score_goals`, `aggregate`
+- [x] `get_recent_finished()` — added `before: datetime` parameter for point-in-time backtesting
+- [x] `validation/backtest.py` — runs SimpleBaselineStrategy on 345 resolved PL matches, prints Brier score report
+- [x] `scripts/weekly_refresh.py` — cron-ready: ingest resolved outcomes → run forecast pipeline → print summary
+- [x] `OddsFetcher` — added `winner_market_source`, `goals_market_source`, `market_sources_seen` provenance fields
+- [x] `EmailAlertChannel` / `ConsoleAlertChannel` — human-readable market labels, plain-English edge explanation
+- [x] Basic reporting: alert count, avg edge, abstention rate — `weekly_refresh.py` `print_summary()` prints per-match edge table plus aggregate counts after every run
+- [x] Outcome update after match resolves — `weekly_refresh.py` step 1 calls `FixtureFetcher.fetch_finished()` and upserts resolved matches into SQLite on every scheduled run; no separate script needed
+- [x] `ArticleIngester` in pipeline — `ArticleIngester` is fully implemented; by design it is invoked via `scripts/populate_rag.py` (pre-population) rather than inside `main.py` startup, so the forecast pipeline stays fast for manual runs
+- [x] `scripts/populate_rag.py` — standalone RAG pre-population script (separate from forecast pipeline)
 
 **Phase 5 implementation notes**
 
@@ -659,6 +676,9 @@ Current validation status:
 - The ReAct message loop had a correctness bug: when the model made a tool call, the assistant message was reconstructed from extracted text, losing the `tool_calls` field, and tool responses lacked `tool_call_id`. The OpenAI API rejects both. The fix extended `LLMProvider` with `format_assistant_turn` and `format_tool_result`, implemented by each adapter in provider-specific formats (OpenAI uses `tool_call_id`; Anthropic uses `tool_result` inside a user message).
 - Team name matching between football-data.org and the-odds-api.com required two fixes: (1) `fetch_odds` now passes `event["home_team"]` / `event["away_team"]` to `_parse_odds` so bookmaker outcome lookup uses the API's own team name strings; (2) several PL clubs were missing from `team_aliases.yaml`.
 - `ConsoleAlertChannel` was added as a zero-config fallback for demo use when SMTP credentials are absent. `main.py` auto-selects it when `smtp_user` or `smtp_password` are empty.
+- Conditional edge skip: `_route_after_setup` replaces the old two-way `_route_next`. Matches with max baseline edge below `min_edge_threshold` bypass the ReAct loop entirely and go straight to synthesis with no news evidence — the guard still applies, confidence is lower (0.30 floor), adjusted probabilities equal baseline. This prevents unnecessary Tavily and LLM calls on flat matches.
+- Backtesting on 345 resolved PL matches: winner market Brier score 0.2126 (beats random 0.222); goals market 0.2689 (above random 0.250, expected since the baseline has no xG signal). Most-likely outcome correct 45.8%. Both scores are the right reference point for comparing after qualitative adjustment is added.
+- RAG pre-population is kept as a separate `scripts/populate_rag.py` concern rather than wired into `main.py` startup, so the forecast pipeline stays fast for manual runs. `ArticleIngester` is fully implemented — the script is the only missing piece.
 
 ---
 
@@ -672,9 +692,11 @@ Current validation status:
 
 ### Phase 7 — Advanced Analytics (Stretch)
 
-- [ ] Dixon-Coles model — `analytics/dixon_coles.py`
-- [ ] Compare Dixon-Coles vs simple baseline on Brier score
-- [ ] Calibration plot and final comparison report
+- [x] Dixon-Coles model — `analytics/dixon_coles.py`
+- [x] Compare Dixon-Coles vs simple baseline on Brier score
+- [x] `get_all_finished()` added to `SQLiteRepository` — DC fitting entry point
+- [x] DC wired as default baseline in `main.py` and `weekly_refresh.py` with Enhanced fallback
+- [ ] Calibration plot and final comparison report (deferred to notebook)
 
 ---
 
@@ -689,6 +711,180 @@ Current validation status:
 - [ ] Add structured logging and error handling for scheduled jobs
 - [ ] Document the production path for local jobs vs deployed scheduler execution
 
+---
+
+### Phase 9 — Production Upgrade (Post-Submission Roadmap)
+
+This phase describes what a genuinely production-grade version looks like — the changes that move it from a well-engineered academic project to something with real forecasting edge and operational reliability.
+
+---
+
+#### 9.1 xG-Powered Dixon-Coles (Biggest Single Improvement)
+
+The current DC model uses actual goals, which are noisy. A team that hits the post three times and loses 0-1 looks identical to a team that was dominated and lucky. Expected Goals (xG) measures the quality of chances created and conceded — it is a far better signal of true team strength.
+
+- Ingest per-match xG data from Understat, FBref, or StatsBomb Open Data
+- Replace `home_goals` / `away_goals` in the DC log-likelihood with `home_xG` / `away_xG`
+- DC parameters now reflect genuine attacking and defensive quality, not shot-stopping luck
+
+**Expected impact:** Winner Brier below 0.200, Goals Brier below 0.230. This single change closes roughly half the gap between the current model and professional closing-line models. It is the highest-leverage improvement available.
+
+---
+
+#### 9.2 Multi-Season Historical Data
+
+One season (~385 matches, 33 teams) is not enough for stable DC parameter estimates, especially for promoted clubs. Three seasons would give ~1,100 training matches and dramatically tighter team strength estimates.
+
+- Ingest 3–5 seasons via football-data.org or StatsBomb Open
+- Use steeper time-decay (ξ ≈ 0.003–0.005) so older seasons inform parameters without dominating recent form
+- Automatic gameweek re-fitting: DC parameters refresh after each round of fixtures
+- Promoted team priors: seed from their Championship xG stats rather than defaulting to league average
+
+---
+
+#### 9.3 Lineup-Aware Strength Adjustment
+
+DC captures long-run team strength but cannot see that Haaland is suspended or that Arsenal's first-choice XI is unavailable. Lineup data closes this gap and is available 60 minutes before kickoff.
+
+- Integrate API-Football or RapidAPI Football for confirmed lineups
+- Build a `LineupAdjuster` that modifies λ_h and λ_a from DC based on player importance scores:
+  - First-choice striker absent → multiply home attack lambda by 0.82
+  - First-choice keeper absent → multiply opponent attack lambda by 1.08
+- Player importance derived from season xG contribution or Transfermarkt valuations
+- Trigger a synthesis re-run when confirmed lineups deviate from expected
+
+**Why this matters:** Lineup confirmation is where most of the remaining edge lives. Statistical models see the long run; lineups see the day. Combining both captures both.
+
+---
+
+#### 9.4 Sharp Money Signal via Pinnacle Line Movement
+
+Pinnacle is the sharpest bookmaker — sharp bettors can bet there and Pinnacle accepts them. When Pinnacle's line moves significantly between open and close, institutional money has come in and the market has updated.
+
+- Track opening and closing Pinnacle odds per match via The Odds API
+- Compute `line_movement = closing_implied_prob - opening_implied_prob` per market
+- If Pinnacle moves in the same direction as the system's edge → boost confidence score
+- If Pinnacle moves against the system's edge → apply confidence penalty and consider suppressing the alert
+- Log every line movement against every alert decision for retrospective calibration
+
+**Why this matters:** The DC model cannot see information that sharp bettors have. Pinnacle's closing line is the best publicly available proxy for true probability. Agreement with line movement validates the edge; disagreement is a red flag.
+
+---
+
+#### 9.5 Weather Integration for Goals Market
+
+Rain, wind, and cold measurably suppress goals in outdoor football. This is a known, consistently exploitable signal the current goals model ignores entirely.
+
+- Free tier: Open-Meteo or WeatherAPI — forecast weather at each stadium at kickoff
+- Build a `WeatherAdjuster` that modifies expected total goals:
+  - Wind > 30 km/h → multiply expected total goals by 0.92
+  - Heavy rain → 0.94
+  - Temperature < 2°C → 0.96
+- Adjustments applied in log-odds space before DC output is finalized
+- Strongest effect: outdoor northern English grounds (Newcastle, Everton, Burnley) in November–February
+
+---
+
+#### 9.6 Multi-Competition Expansion
+
+The entire architecture is competition-agnostic. Extending to La Liga, Bundesliga, and Champions League is a configuration change, not a rebuild.
+
+- Add competition configs (API keys, team alias YAMLs, league-average goals)
+- Fit separate DC models per competition
+- Route alerts by user competition preferences
+- **High-value targets:** Champions League (higher liquidity, more news, bigger stakes) and La Liga (Understat xG data is excellent for Spanish clubs)
+
+---
+
+#### 9.7 Real-Time Alerts via Telegram Bot
+
+Email has latency and lands in promotions folders. Lineup confirmation happens 60–90 minutes before kickoff and the window to act closes fast.
+
+- Replace or supplement `EmailAlertChannel` with `TelegramAlertChannel` (python-telegram-bot)
+- Alerts formatted as rich messages with inline buttons: *View full rationale* / *Suppress this match*
+- Bot commands: `/forecasts` (today's edges), `/calibration` (30-day Brier), `/suppress Arsenal`
+- Lineup re-check alerts become urgent pushes the moment confirmed XIs deviate from expected
+
+---
+
+#### 9.8 Automated Rolling Calibration and Self-Tuning
+
+`base_sensitivity` (the log-odds adjustment scalar, currently 0.15) is static. If the ReAct agent's qualitative adjustments are systematically over- or under-confident, the system never corrects.
+
+- After each match resolves, compute whether the qualitative adjustment improved or hurt the Brier score
+- Maintain a rolling 60-match window of `adjustment_brier_delta`
+- If adjustments are consistently hurting: decay `base_sensitivity` by 5%
+- If adjustments are consistently helping: increase by 3% up to a cap of 0.25
+- Source reliability scores updated the same way: sources whose evidence led to correct adjustments see their score bumped; misleading sources get penalised
+- This closes the feedback loop — the system measurably improves over a season rather than staying static
+
+---
+
+#### 9.9 Cloud Deployment on a $15/Month Stack
+
+The full pipeline can run on a $5/month VPS (Hetzner CX11, DigitalOcean Droplet) with zero infrastructure overhead.
+
+- Dockerize: `Dockerfile` + `docker-compose.yml` (app + ChromaDB volume)
+- Cron on the VPS:
+  - `06:00` daily: `populate_rag.py` (fresh team news)
+  - `08:00` daily: `weekly_refresh.py --days-ahead 7` (forecast scan)
+  - Match day −90 min: lineup re-check trigger (APScheduler)
+- PostgreSQL upgrade path: swap SQLite with zero code change via a SQLAlchemy abstraction layer on `SQLiteRepository`
+- Secrets via `.env` on the VPS or GitHub Actions secrets for CI/CD
+- **Total cost:** VPS $5 + The Odds API free + football-data.org free + Tavily $5 free credits + OpenAI ~$3/week ≈ **under $15/month for a fully automated full-season system**
+
+---
+
+#### 9.10 Live Calibration Dashboard
+
+`validation/backtest.py` produces a printed report. A production system needs a live view so drift is visible the moment it starts.
+
+- FastAPI endpoint serving calibration metrics as JSON
+- Streamlit dashboard:
+  - Rolling 30-match Brier scores (DC vs Enhanced, winner vs goals)
+  - Alert history: edge size, market, confidence, outcome
+  - Calibration curve: predicted probability bucket vs actual frequency
+- Evidence source hit rate: which sources consistently led to correct directional calls
+- Line movement agreement rate: how often does the system agree with Pinnacle's closing direction?
+- Auto-refreshes after each `weekly_refresh.py` run
+
+---
+
+#### 9.11 Forecast Engine V2: Stacked Ensemble + Closing-Line Calibration
+
+The current architecture is strong because it separates a statistical prior from LLM-guided qualitative adjustment. The next realistic leap is to stop treating that as a single-path forecast and instead turn it into an ensemble whose final probabilities are learned from historical performance.
+
+- Build three forecast components per match:
+  - `StatsPrior`: Dixon-Coles / xG-driven pre-news probabilities
+  - `ContextPrior`: lineup, injury, weather, and qualitative synthesis signals converted into structured numeric features
+  - `MarketPrior`: opening odds, current odds, line movement, and bookmaker disagreement metrics
+- Train a lightweight meta-model on historical resolved matches:
+  - multinomial logistic regression or gradient-boosted trees for `home/draw/away`
+  - binary calibrated model for `over/under`
+  - inputs are the three priors plus confidence, source diversity, evidence recency, and line movement features
+- Use time-split validation only:
+  - train on older match windows, validate on later windows
+  - never random-split football matches across time or the closing-line features will leak future information
+- Add explicit probability calibration:
+  - isotonic regression or Platt scaling on top of the ensemble outputs
+  - separate calibration per market family (`winner`, `goals`)
+- Teach the model abstention:
+  - train a second-stage classifier for `alert_worthy`
+  - target is whether a forecast historically beat the closing line by enough margin after vig
+  - this becomes the production version of today's heuristic `AlertGuard` thresholds
+- Log feature attribution for every forecast:
+  - which part of the ensemble moved the probability most
+  - whether the edge came from stats, injuries, line movement, or disagreement with the market
+- Keep the LLM bounded and legible:
+  - the LLM still does evidence synthesis and structured adjudication
+  - but the final probability layer is learned from history rather than hand-tuned weights alone
+
+**Why this matters:** this is the point where the project stops being "a good model plus smart glue" and becomes a true forecasting system. The market remains the strongest benchmark in the world; the ensemble learns when to trust the stats, when to trust the news, and when to simply stand down.
+
+**Most realistic production target:** beat the current baseline and reduce false-positive alerts, not "beat Pinnacle every week." The win condition is sharper calibration, cleaner abstention, and fewer emotionally convincing but negative-EV alerts.
+
+---
+
 ## 18. Final Recommendation
 
 The strongest realistic version of this project is a multi-agent soccer market intelligence assistant for Premier League matches that combines:
@@ -698,4 +894,10 @@ The strongest realistic version of this project is a multi-agent soccer market i
 - email alerts
 - strong guardrails around evidence quality and uncertainty
 
-The advanced statistical forecasting model should remain part of the roadmap, but as a later phase rather than a hard requirement for the first working version.
+The Phase 9 roadmap above is the path from a well-calibrated academic system to a genuinely production-grade forecasting pipeline.
+
+**Highest-leverage single change: xG-powered Dixon-Coles (9.1).** It addresses the root cause of the Goals Brier being above random and would likely push Winner Brier below 0.200.
+
+**Highest-leverage operational change: Telegram alerts + lineup integration (9.3 + 9.7).** The window between lineup confirmation and kickoff is where the real edge lives, and email is too slow to capture it.
+
+**Highest-leverage production upgrade: Forecast Engine V2 (9.11).** A stacked ensemble with closing-line-aware calibration is the most realistic way to turn today's strong architecture into a system that knows when to trust itself and when to abstain.

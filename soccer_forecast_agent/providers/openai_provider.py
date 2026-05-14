@@ -14,6 +14,9 @@ class OpenAIProvider:
 
     def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """Send messages and return the assistant content string."""
+        system = kwargs.pop("system", None)
+        if system is not None:
+            messages = [{"role": "system", "content": system}] + messages
         response = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
@@ -28,6 +31,10 @@ class OpenAIProvider:
         **kwargs: Any,
     ) -> dict:
         """Send messages with tool definitions; return the raw response as a dict."""
+        system = kwargs.pop("system", None)
+        if system is not None:
+            messages = [{"role": "system", "content": system}] + messages
+        kwargs.setdefault("parallel_tool_calls", False)
         response = self._client.chat.completions.create(
             model=self._model,
             messages=messages,

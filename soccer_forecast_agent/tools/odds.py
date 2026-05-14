@@ -69,8 +69,9 @@ class OddsFetcher:
 
     def _parse_odds(self, event: dict, home_team: str, away_team: str) -> MarketOdds | None:
         """Extract the best available h2h and totals odds from the bookmaker list."""
-        h2h = self._best_h2h(event.get("bookmakers", []), home_team, away_team)
-        totals = self._best_totals(event.get("bookmakers", []))
+        bookmakers = event.get("bookmakers", [])
+        h2h = self._best_h2h(bookmakers, home_team, away_team)
+        totals = self._best_totals(bookmakers)
 
         if not h2h or not totals:
             return None
@@ -84,6 +85,9 @@ class OddsFetcher:
             away_win=h2h["away"],
             over_2_5=totals["over"],
             under_2_5=totals["under"],
+            winner_market_source=h2h["source"],
+            goals_market_source=totals["source"],
+            market_sources_seen=self._sources_seen(bookmakers),
         )
 
     def _best_h2h(self, bookmakers: list[dict], home_team: str, away_team: str) -> dict | None:
@@ -97,7 +101,12 @@ class OddsFetcher:
             away = outcomes.get(away_team)
             draw = outcomes.get("Draw")
             if home and away and draw:
-                return {"home": home, "draw": draw, "away": away}
+                return {
+                    "home": home,
+                    "draw": draw,
+                    "away": away,
+                    "source": self._source_label(bm),
+                }
         return None
 
     def _best_totals(self, bookmakers: list[dict]) -> dict | None:
@@ -111,7 +120,11 @@ class OddsFetcher:
                     over = next((o["price"] for o in market["outcomes"] if o["name"] == "Over" and o.get("point") == 2.5), None)
                     under = next((o["price"] for o in market["outcomes"] if o["name"] == "Under" and o.get("point") == 2.5), None)
                     if over and under:
-                        return {"over": over, "under": under}
+                        return {
+                            "over": over,
+                            "under": under,
+                            "source": self._source_label(bm),
+                        }
         return None
 
     def _ranked_bookmakers(self, bookmakers: list[dict]) -> list[dict]:
@@ -119,6 +132,19 @@ class OddsFetcher:
         preferred = [b for b in bookmakers if b["key"] in self.PREFERRED_BOOKMAKERS]
         others = [b for b in bookmakers if b["key"] not in self.PREFERRED_BOOKMAKERS]
         return preferred + others
+
+    def _sources_seen(self, bookmakers: list[dict]) -> list[str]:
+        """Return unique bookmaker labels seen in the event payload, in ranked order."""
+        labels: list[str] = []
+        for bookmaker in self._ranked_bookmakers(bookmakers):
+            label = self._source_label(bookmaker)
+            if label not in labels:
+                labels.append(label)
+        return labels
+
+    def _source_label(self, bookmaker: dict) -> str:
+        """Return a human-readable bookmaker label."""
+        return bookmaker.get("title") or bookmaker.get("key") or "Unknown source"
 
     def _normalise(self, name: str) -> str:
         """Lowercase and strip team name for fuzzy matching across API naming conventions."""

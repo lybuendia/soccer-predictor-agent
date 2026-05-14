@@ -31,6 +31,7 @@ class Config:
     min_evidence_count: int = 3
     spam_window_hours: int = 6
     base_sensitivity: float = 0.15
+    debug_llm: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -52,4 +53,5 @@ class Config:
             db_path=os.environ.get("DB_PATH", "soccer_forecast.db"),
             chroma_path=os.environ.get("CHROMA_PATH", ".chroma"),
             embedding_model=os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+            debug_llm=os.environ.get("DEBUG_LLM", "").lower() in {"1", "true", "yes", "on"},
         )

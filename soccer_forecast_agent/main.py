@@ -1,5 +1,6 @@
 """CLI entry point — wires all dependencies and runs one forecast scan."""
 
+import logging
 import sqlite3
 import openai
 import chromadb
@@ -15,7 +16,8 @@ from soccer_forecast_agent.providers.embeddings import (
     SentenceTransformerEmbeddingProvider,
 )
 from soccer_forecast_agent.providers.llm import LLMProvider
-from soccer_forecast_agent.analytics.baseline import SimpleBaselineStrategy
+from soccer_forecast_agent.analytics.baseline import EnhancedBaselineStrategy
+from soccer_forecast_agent.analytics.dixon_coles import DixonColesStrategy
 from soccer_forecast_agent.analytics.features import FeatureExtractor
 from soccer_forecast_agent.memory.sqlite_repository import SQLiteRepository, init_db
 from soccer_forecast_agent.memory.chroma_repository import ChromaVectorRepository
@@ -30,6 +32,9 @@ from soccer_forecast_agent.agents.stats_market import StatsMarketAgent
 from soccer_forecast_agent.agents.news_context import NewsContextAgent, ToolDispatcher
 from soccer_forecast_agent.agents.synthesis_alert import SynthesisAlertAgent, SynthesisTuning
 from soccer_forecast_agent.agents.supervisor import SupervisorAgent
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class LocalMCPToolClient:
@@ -62,6 +67,18 @@ def build_llm_provider(config: Config) -> LLMProvider:
     raise ValueError(f"Unknown LLM_PROVIDER: {config.llm_provider}")
 
 
+def _build_baseline(sql_repo: SQLiteRepository):
+    """Fit Dixon-Coles on all resolved matches; fall back to EnhancedBaseline if too few."""
+    resolved = sql_repo.get_all_finished("PL")
+    if len(resolved) >= 20:
+        dc = DixonColesStrategy()
+        dc.fit(resolved)
+        LOGGER.info("Dixon-Coles fitted on %d matches.", len(resolved))
+        return dc
+    LOGGER.warning("Fewer than 20 resolved matches — using EnhancedBaselineStrategy.")
+    return EnhancedBaselineStrategy()
+
+
 def build_embedding_provider(config: Config) -> EmbeddingProvider:
     """Instantiate the configured embedding provider."""
     if config.embedding_provider == "huggingface":
@@ -72,9 +89,21 @@ def build_embedding_provider(config: Config) -> EmbeddingProvider:
     raise ValueError(f"Unknown EMBEDDING_PROVIDER: {config.embedding_provider}")
 
 
+def configure_logging(config: Config) -> None:
+    """Configure runtime logging, enabling verbose LLM tracing when requested."""
+    level = logging.DEBUG if config.debug_llm else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
 def main() -> None:
     """Wire all dependencies and run one forecast scan."""
     config = Config.from_env()
+    configure_logging(config)
+    if config.debug_llm:
+        LOGGER.info("DEBUG_LLM is enabled; verbose model interaction logs will be emitted.")
 
     db_conn = sqlite3.connect(config.db_path)
     init_db(db_conn)
@@ -109,7 +138,8 @@ def main() -> None:
         )
     )
 
-    stats_agent = StatsMarketAgent(fixture_fetcher, odds_fetcher, SimpleBaselineStrategy(), FeatureExtractor(), sql_repo)
+    baseline = _build_baseline(sql_repo)
+    stats_agent = StatsMarketAgent(fixture_fetcher, odds_fetcher, baseline, FeatureExtractor(), sql_repo)
     news_agent = NewsContextAgent(
         llm,
         ToolDispatcher(local_mcp_client),
@@ -119,11 +149,14 @@ def main() -> None:
         config.react_max_steps,
     )
     synthesis_agent = SynthesisAlertAgent(
-        llm, alert_channel, sql_repo, guard,
+        llm, alert_channel, sql_repo, sql_repo, guard,
         tuning=SynthesisTuning(base_sensitivity=config.base_sensitivity),
     )
 
-    supervisor = SupervisorAgent(stats_agent, news_agent, synthesis_agent)
+    supervisor = SupervisorAgent(
+        stats_agent, news_agent, synthesis_agent,
+        min_edge_threshold=config.min_edge_threshold,
+    )
     supervisor.run(competition="PL", days_ahead=7)
 
 

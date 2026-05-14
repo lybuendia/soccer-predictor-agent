@@ -34,6 +34,12 @@ class FakeLLM:
         self.tool_calls.append({"messages": messages, "tools": tools, "kwargs": kwargs})
         return self._tool_responses.pop(0)
 
+    def format_assistant_turn(self, response: dict) -> dict:
+        return {"role": "assistant", "content": response.get("content", [])}
+
+    def format_tool_result(self, tool_call_id: str, content: str) -> dict:
+        return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_call_id, "content": content}]}
+
 
 class FakeVectorRepository:
     def __init__(self, chunks: list[ArticleChunk]) -> None:
@@ -74,9 +80,11 @@ def _base_state(sample_match, sample_baseline) -> dict:
         "odds_map": {},
         "baseline_forecasts": {sample_match.match_id: sample_baseline},
         "current_match_id": sample_match.match_id,
+        "current_forecast_id": "forecast-123",
         "evidence_items": [],
         "interpreted_evidence": [],
         "forecast": None,
+        "all_forecasts": [],
         "alert_sent": False,
         "errors": [],
     }
@@ -160,9 +168,10 @@ def test_should_stop_requires_enough_high_reliability_evidence(sample_match) -> 
         ),
     ]
 
-    assert agent._should_stop(evidence[:1], step=1) is False
-    assert agent._should_stop(evidence, step=1) is True
-    assert agent._should_stop([], step=4) is True
+    assert agent._should_stop(evidence[:1], step=1, live_search_performed=True) is False
+    assert agent._should_stop(evidence, step=1, live_search_performed=False) is False
+    assert agent._should_stop(evidence, step=1, live_search_performed=True) is True
+    assert agent._should_stop([], step=4, live_search_performed=False) is True
 
 
 def test_news_context_agent_run_collects_and_saves_evidence(sample_match, sample_baseline) -> None:
@@ -232,10 +241,10 @@ def test_news_context_agent_run_collects_and_saves_evidence(sample_match, sample
 
     assert len(result["evidence_items"]) == 2
     assert [item.source for item in result["evidence_items"]] == ["bbc.co.uk", "skysports.com"]
-    assert all(item.forecast_id == sample_match.match_id for item in result["evidence_items"])
+    assert all(item.forecast_id == "forecast-123" for item in result["evidence_items"])
     assert len(result["interpreted_evidence"]) == 2
     assert all(isinstance(item, InterpretedEvidence) for item in result["interpreted_evidence"])
-    assert len(evidence_repo.saved) == 2
+    assert len(evidence_repo.saved) == 0
     assert result["errors"] == []
     assert len(llm.tool_calls) == 2
 
@@ -296,7 +305,68 @@ def test_news_context_agent_records_unknown_tool_error(sample_match, sample_base
     assert result["errors"] == ["Tool dispatch failed for unknown_tool: Unknown tool: unknown_tool"]
 
 
-def test_news_context_agent_records_evidence_save_failures(sample_match, sample_baseline) -> None:
+def test_news_context_agent_requires_live_search_even_with_seeded_evidence(sample_match, sample_baseline) -> None:
+    llm = FakeLLM(
+        tool_responses=[
+            {
+                "content": [
+                    {"type": "text", "text": "Check one fresh source before stopping."},
+                    {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "search_news",
+                        "input": {"query": "Arsenal Chelsea injuries", "max_results": 1},
+                    },
+                ]
+            },
+            {"content": [{"type": "text", "text": "Enough evidence collected for this match."}]},
+        ],
+        chat_responses=[
+            '[{"source":"bbc.co.uk","url":"https://bbc.co.uk/seed","summary":"Seeded squad update.","direction":"home_positive","applies_to_market":"winner"}]',
+            '[{"source":"bbc.co.uk","url":"https://bbc.co.uk/story","summary":"Fresh report confirms the same edge.","direction":"home_positive","applies_to_market":"winner"}]',
+        ],
+    )
+    agent = NewsContextAgent(
+        llm=llm,
+        tool_dispatcher=ToolDispatcher(
+            FakeMCPClient(
+                result=[
+                    {
+                        "url": "https://bbc.co.uk/story",
+                        "title": "Arsenal midfield boost",
+                        "snippet": "Key midfielders expected to return.",
+                    }
+                ]
+            )
+        ),
+        vector_repo=FakeVectorRepository(
+            [
+                ArticleChunk(
+                    chunk_id="chunk-1",
+                    content="Seeded report says Arsenal expect key midfielders back.",
+                    source="bbc.co.uk",
+                    url="https://bbc.co.uk/seed",
+                    published_at="2026-04-24T10:00:00+00:00",
+                    teams=["Arsenal"],
+                )
+            ]
+        ),
+        evidence_repo=FakeEvidenceRepository(),
+        source_reliability_repo=FakeSourceReliabilityRepository({"bbc.co.uk": 0.85}),
+        max_steps=2,
+        min_evidence_count=1,
+        min_avg_reliability=0.5,
+    )
+
+    result = agent.run(_base_state(sample_match, sample_baseline))
+
+    assert len(result["evidence_items"]) == 2
+    # One tool call is made (the live search) — agent stops after that via should_stop()
+    # because evidence count and reliability thresholds are already met.
+    assert len(llm.tool_calls) == 1
+
+
+def test_news_context_agent_no_longer_persists_evidence_during_research(sample_match, sample_baseline) -> None:
     llm = FakeLLM(
         tool_responses=[
             {
@@ -342,8 +412,7 @@ def test_news_context_agent_records_evidence_save_failures(sample_match, sample_
     result = agent.run(_base_state(sample_match, sample_baseline))
 
     assert len(result["evidence_items"]) == 1
-    assert result["errors"]
-    assert result["errors"][0].startswith("Failed to save evidence ")
+    assert result["errors"] == []
 
 
 def test_extract_evidence_suppresses_conflicting_market_directions(sample_match, sample_baseline) -> None:

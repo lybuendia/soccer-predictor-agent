@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
-from soccer_forecast_agent.analytics.baseline import SimpleBaselineStrategy
+from soccer_forecast_agent.analytics.baseline import EnhancedBaselineStrategy
 from soccer_forecast_agent.analytics.features import FeatureExtractor
 from soccer_forecast_agent.agents.stats_market import StatsMarketAgent
 from soccer_forecast_agent.config import Config
@@ -48,7 +48,7 @@ def main() -> None:
     agent = StatsMarketAgent(
         fixture_fetcher=_UnusedFixtureFetcher(),
         odds_fetcher=_UnusedOddsFetcher(),
-        baseline_strategy=SimpleBaselineStrategy(home_advantage_boost=config.home_advantage_boost),
+        baseline_strategy=EnhancedBaselineStrategy(home_advantage_boost=config.home_advantage_boost),
         feature_extractor=FeatureExtractor(),
         match_repo=repository,
     )
@@ -89,7 +89,7 @@ def main() -> None:
         away_goals_scored=away_goals_scored,
         away_goals_conceded=away_goals_conceded,
     )
-    baseline = SimpleBaselineStrategy(home_advantage_boost=config.home_advantage_boost).compute(context)
+    baseline = EnhancedBaselineStrategy(home_advantage_boost=config.home_advantage_boost).compute(context)
 
     print(f"Fixture: {home_team} vs {away_team}")
     print()

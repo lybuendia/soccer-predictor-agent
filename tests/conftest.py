@@ -29,6 +29,9 @@ def sample_odds() -> MarketOdds:
         away_win=4.0,
         over_2_5=1.95,
         under_2_5=1.85,
+        winner_market_source="Bet365",
+        goals_market_source="Pinnacle",
+        market_sources_seen=["Bet365", "Pinnacle", "William Hill"],
     )
 
 

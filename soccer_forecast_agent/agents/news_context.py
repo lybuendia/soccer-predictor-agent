@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import json
+import logging
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -17,6 +18,9 @@ from soccer_forecast_agent.prompts.loader import (
     render_news_context_research_messages,
 )
 from soccer_forecast_agent.providers.llm import LLMProvider
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ToolDispatcher:
@@ -108,9 +112,13 @@ class NewsContextAgent:
     def run(self, state: GraphState) -> GraphState:
         """Seed context from the vector store, then run the ReAct loop to gather evidence."""
         current_match_id = state.get("current_match_id")
+        current_forecast_id = state.get("current_forecast_id")
         errors = list(state.get("errors", []))
         if not current_match_id:
             errors.append("NewsContextAgent requires current_match_id in state")
+            return {**state, "errors": errors}
+        if not current_forecast_id:
+            errors.append("NewsContextAgent requires current_forecast_id in state")
             return {**state, "errors": errors}
 
         match = self._match_from_state(state, current_match_id)
@@ -123,7 +131,6 @@ class NewsContextAgent:
             errors.append(f"Baseline forecast not found for match_id={current_match_id}")
             return {**state, "errors": errors}
 
-        forecast_id = state["forecast"].forecast_id if state.get("forecast") else current_match_id
         evidence_items: list[EvidenceItem] = list(state.get("evidence_items", []))
         interpreted_items: list[InterpretedEvidence] = list(state.get("interpreted_evidence", []))
         seed_context = self._seed_context(match.home_team, match.away_team)
@@ -131,38 +138,60 @@ class NewsContextAgent:
             seeded_ev, seeded_interp = self._extract_evidence(
                 match=match,
                 baseline=baseline,
-                forecast_id=forecast_id,
+                forecast_id=current_forecast_id,
                 source_material="\n\n".join(seed_context),
                 source_label="vector_seed",
                 max_items=max(1, self._min_evidence_count),
             )
             evidence_items.extend(seeded_ev)
             interpreted_items.extend(seeded_interp)
-            self._persist_evidence(seeded_ev, errors)
 
         messages = self._build_messages(match=match, baseline=baseline, seed_context=seed_context, evidence=evidence_items)
+        LOGGER.debug(
+            "NewsContextAgent starting for %s vs %s with %d seeded evidence items.",
+            match.home_team,
+            match.away_team,
+            len(evidence_items),
+        )
 
         step = 0
-        while not self._should_stop(evidence_items, step):
+        live_search_performed = False
+        while not self._should_stop(evidence_items, step, live_search_performed):
             step += 1
             thought, tool_name, tool_args, tool_call_id, raw_response = self._react_step(messages, step)
+            LOGGER.debug(
+                "NewsContextAgent step %d raw tool response: %s",
+                step,
+                self._pretty(raw_response),
+            )
 
             if tool_name is None or tool_args is None:
+                LOGGER.debug("NewsContextAgent step %d completed without tool call. Thought: %s", step, thought)
                 messages.append({"role": "assistant", "content": thought})
                 final_ev, final_interp = self._extract_evidence(
                     match=match,
                     baseline=baseline,
-                    forecast_id=forecast_id,
+                    forecast_id=current_forecast_id,
                     source_material=thought,
                     source_label="assistant_summary",
                     max_items=1,
                 )
                 evidence_items.extend(final_ev)
                 interpreted_items.extend(final_interp)
-                self._persist_evidence(final_ev, errors)
+                LOGGER.debug(
+                    "NewsContextAgent final extracted evidence: %s",
+                    self._pretty([asdict(item) for item in final_ev]),
+                )
                 break
 
             messages.append(self._llm.format_assistant_turn(raw_response))
+            LOGGER.debug(
+                "NewsContextAgent step %d tool call: name=%s args=%s thought=%s",
+                step,
+                tool_name,
+                self._pretty(tool_args),
+                thought,
+            )
 
             try:
                 observation = self._dispatcher.dispatch(tool_name, tool_args)
@@ -170,18 +199,28 @@ class NewsContextAgent:
                 errors.append(f"Tool dispatch failed for {tool_name}: {exc}")
                 break
 
+            live_search_performed = live_search_performed or tool_name == "search_news"
+            LOGGER.debug(
+                "NewsContextAgent step %d tool observation: %s",
+                step,
+                observation,
+            )
             messages.append(self._llm.format_tool_result(tool_call_id or "", observation))
             extracted_ev, extracted_interp = self._extract_evidence(
                 match=match,
                 baseline=baseline,
-                forecast_id=forecast_id,
+                forecast_id=current_forecast_id,
                 source_material=observation,
                 source_label=tool_name,
                 max_items=2,
             )
             evidence_items.extend(extracted_ev)
             interpreted_items.extend(extracted_interp)
-            self._persist_evidence(extracted_ev, errors)
+            LOGGER.debug(
+                "NewsContextAgent step %d extracted evidence: %s",
+                step,
+                self._pretty([asdict(item) for item in extracted_ev]),
+            )
 
         return {
             **state,
@@ -208,10 +247,12 @@ class NewsContextAgent:
         tool_name, tool_args, tool_call_id = self._extract_tool_call(response)
         return thought, tool_name, tool_args, tool_call_id, response
 
-    def _should_stop(self, evidence: list[EvidenceItem], step: int) -> bool:
+    def _should_stop(self, evidence: list[EvidenceItem], step: int, live_search_performed: bool) -> bool:
         """Return True if stopping conditions are met: budget exhausted or sufficient quality evidence collected."""
         if step >= self._max_steps:
             return True
+        if not live_search_performed:
+            return False
         if len(evidence) < self._min_evidence_count:
             return False
         avg_reliability = sum(item.reliability_score for item in evidence) / len(evidence)
@@ -291,6 +332,11 @@ class NewsContextAgent:
             temperature=0,
             max_tokens=600,
         )
+        LOGGER.debug(
+            "NewsContextAgent evidence extraction raw response from %s: %s",
+            source_label,
+            response,
+        )
         items = self._parse_json_array(response)
         pairs: list[tuple[EvidenceItem, InterpretedEvidence]] = []
         for item in items[:max_items]:
@@ -343,6 +389,23 @@ class NewsContextAgent:
         valid = [(ev, interp) for ev, interp in pairs if ev.summary]
         return [ev for ev, _ in valid], [interp for _, interp in valid]
 
+    def _pretty(self, value: object) -> str:
+        """Return a compact JSON string for debug logging."""
+        try:
+            return json.dumps(value, default=self._json_default, indent=2, sort_keys=True)
+        except TypeError:
+            return str(value)
+
+    def _json_default(self, value: object) -> object:
+        """Return a log-safe representation for datetimes and dataclasses."""
+        if is_dataclass(value):
+            return asdict(value)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
+
     def _parse_json_array(self, raw_text: str) -> list[dict]:
         """Parse a JSON array from a model response, tolerating fenced code blocks."""
         candidate = raw_text.strip()
@@ -366,11 +429,3 @@ class NewsContextAgent:
         if parsed.netloc:
             return parsed.netloc.removeprefix("www.")
         return source.removeprefix("www.").split("/", 1)[0]
-
-    def _persist_evidence(self, evidence_items: list[EvidenceItem], errors: list[str]) -> None:
-        """Persist evidence items and capture repository errors without aborting the run."""
-        for item in evidence_items:
-            try:
-                self._evidence_repo.save_evidence(item)
-            except Exception as exc:
-                errors.append(f"Failed to save evidence {item.evidence_id}: {exc}")

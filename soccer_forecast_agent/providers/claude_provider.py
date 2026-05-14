@@ -15,6 +15,9 @@ class ClaudeProvider:
     def chat(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
         """Send messages and return the assistant content string."""
         system = kwargs.pop("system", None)
+        if system is None and messages and messages[0].get("role") == "system":
+            system = messages[0].get("content")
+            messages = messages[1:]
         response = self._client.messages.create(
             model=self._model,
             max_tokens=kwargs.pop("max_tokens", 4096),
@@ -32,6 +35,9 @@ class ClaudeProvider:
     ) -> dict:
         """Send messages with tool definitions; return a normalised response dict."""
         system = kwargs.pop("system", None)
+        if system is None and messages and messages[0].get("role") == "system":
+            system = messages[0].get("content")
+            messages = messages[1:]
         response = self._client.messages.create(
             model=self._model,
             max_tokens=kwargs.pop("max_tokens", 4096),

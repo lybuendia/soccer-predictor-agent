@@ -2,7 +2,7 @@ from soccer_forecast_agent.models.evidence import EvidenceItem, InterpretedEvide
 from soccer_forecast_agent.prompts.loader import (
     render_news_context_evidence_messages,
     render_news_context_research_messages,
-    render_synthesis_rationale_messages,
+    render_synthesis_decision_messages,
 )
 
 
@@ -53,7 +53,7 @@ def test_render_news_context_evidence_messages_includes_constraints(sample_match
     assert "Source label: search_news" in messages[1]["content"]
 
 
-def test_render_synthesis_rationale_messages_uses_yaml_prompt(sample_match, sample_baseline) -> None:
+def test_render_synthesis_decision_messages_uses_yaml_prompt(sample_match, sample_baseline, sample_odds) -> None:
     interpreted = [
         InterpretedEvidence(
             evidence_id="e1",
@@ -66,19 +66,19 @@ def test_render_synthesis_rationale_messages_uses_yaml_prompt(sample_match, samp
         )
     ]
 
-    messages = render_synthesis_rationale_messages(
+    messages = render_synthesis_decision_messages(
         match=sample_match,
         baseline=sample_baseline,
-        adjusted=sample_baseline,
+        odds=sample_odds,
         interpreted=interpreted,
-        edge_market="home_win",
+        evidence_quality_score=0.82,
         evidence_limit=3,
-        sentence_limit=2,
     )
 
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
     assert "SynthesisAlertAgent" in messages[0]["content"]
-    assert "2 sentences or fewer" in messages[1]["content"]
-    assert "Edge market: home_win" in messages[1]["content"]
+    assert '"recommended_market"' in messages[1]["content"]
+    assert "Evidence quality score: 0.82" in messages[1]["content"]
+    assert "home_win=1.90" in messages[1]["content"]
     assert "Home striker returned to full training." in messages[1]["content"]

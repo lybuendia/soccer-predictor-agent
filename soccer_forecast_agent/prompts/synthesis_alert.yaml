@@ -1,25 +1,48 @@
-synthesis_rationale:
+synthesis_decision:
   system: |
     You are the SynthesisAlertAgent for a soccer forecasting system.
-    Write a concise decision-support rationale.
-    Keep the tone cautious and avoid hype or certainty.
+    Your job is to judge how qualitative evidence should move a statistical baseline, while staying cautious.
+    You are not allowed to invent facts beyond the provided evidence.
+    Return JSON only.
   user: |
-    Write a concise soccer forecasting rationale in {sentence_limit} sentences or fewer.
-    Describe the shift from baseline to adjusted view and mention the strongest evidence.
+    Review the baseline probabilities, market odds, evidence quality, and interpreted evidence for this match.
+    Decide:
+    - which market category matters most right now
+    - which specific market is the best candidate bet
+    - how strongly the winner market should move
+    - how strongly the goals market should move
+    - whether this is alert-worthy before hard guardrails are applied
+    - concise reasons and risks
+
+    Return one JSON object with this exact schema:
+    {{
+      "market_category": "winner" | "goals",
+      "recommended_market": "home_win" | "draw" | "away_win" | "over_2_5" | "under_2_5",
+      "winner_adjustment": "strong_home" | "medium_home" | "light_home" | "neutral" | "light_draw" | "medium_draw" | "light_away" | "medium_away" | "strong_away",
+      "goals_adjustment": "strong_over" | "medium_over" | "light_over" | "neutral" | "light_under" | "medium_under" | "strong_under",
+      "llm_conviction_score": 0.0 to 1.0,
+      "alert_worthy": true | false,
+      "summary": "1-2 sentence summary",
+      "rationale_points": ["short point", "short point"],
+      "risk_points": ["short risk", "short risk"]
+    }}
 
     Match: {home_team} vs {away_team}
     Baseline 1X2:
     - home={baseline_home_win}
     - draw={baseline_draw}
     - away={baseline_away_win}
-    Adjusted 1X2:
-    - home={adjusted_home_win}
-    - draw={adjusted_draw}
-    - away={adjusted_away_win}
-    Adjusted goals:
-    - over_2_5={adjusted_over_2_5}
-    - under_2_5={adjusted_under_2_5}
-    Edge market: {edge_market}
+    Baseline goals:
+    - over_2_5={baseline_over_2_5}
+    - under_2_5={baseline_under_2_5}
 
+    Market odds:
+    - home_win={odds_home_win}
+    - draw={odds_draw}
+    - away_win={odds_away_win}
+    - over_2_5={odds_over_2_5}
+    - under_2_5={odds_under_2_5}
+
+    Evidence quality score: {evidence_quality_score}
     Evidence:
     {evidence_lines}

@@ -29,6 +29,9 @@ class MarketOdds:
     away_win: float
     over_2_5: float
     under_2_5: float
+    winner_market_source: str = "Unknown source"
+    goals_market_source: str = "Unknown source"
+    market_sources_seen: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -87,11 +90,27 @@ class SynthesisResult:
 
 
 @dataclass
+class SynthesisDecision:
+    """Structured LLM adjudication over how the baseline should move and whether the signal is alert-worthy."""
+
+    market_category: str
+    recommended_market: str
+    winner_adjustment: str
+    goals_adjustment: str
+    llm_conviction_score: float
+    alert_worthy: bool
+    rationale_points: list[str] = field(default_factory=list)
+    risk_points: list[str] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
 class AlertPayload:
     """Everything needed to render and send an alert email."""
 
     match: Match
     forecast: Forecast
+    market_odds: MarketOdds | None
     rationale: str
     disclaimer: str = (
         "This is decision support only. Not a guarantee of profit. "

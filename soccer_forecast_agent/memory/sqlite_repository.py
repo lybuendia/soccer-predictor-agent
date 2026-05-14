@@ -58,20 +58,37 @@ class SQLiteRepository:
         ).fetchall()
         return [self._row_to_match(r) for r in rows]
 
-    def get_recent_finished(self, team: str, competition: str, limit: int = 5) -> list[Match]:
-        """Return the most recent finished matches for a team in a competition."""
-        rows = self._conn.execute(
-            """
+    def get_recent_finished(
+        self,
+        team: str,
+        competition: str,
+        limit: int = 5,
+        before: datetime | None = None,
+    ) -> list[Match]:
+        """Return the most recent finished matches for a team, optionally capped before a cutoff date."""
+        query = """
             SELECT *
             FROM matches
             WHERE competition = ?
               AND status = 'resolved'
               AND final_score IS NOT NULL
               AND (home_team = ? OR away_team = ?)
-            ORDER BY kickoff_time DESC
-            LIMIT ?
-            """,
-            (competition, team, team, limit),
+        """
+        params: list = [competition, team, team]
+        if before is not None:
+            query += "  AND kickoff_time < ?\n"
+            params.append(before.isoformat())
+        query += "ORDER BY kickoff_time DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._row_to_match(r) for r in rows]
+
+    def get_all_finished(self, competition: str) -> list[Match]:
+        """Return all resolved matches for a competition ordered chronologically."""
+        rows = self._conn.execute(
+            "SELECT * FROM matches WHERE competition = ? AND status = 'resolved' "
+            "AND final_score IS NOT NULL ORDER BY kickoff_time ASC",
+            (competition,),
         ).fetchall()
         return [self._row_to_match(r) for r in rows]
 

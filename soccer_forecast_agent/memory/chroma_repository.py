@@ -29,27 +29,39 @@ class ChromaVectorRepository:
         )
 
     def search(self, query: str, teams: list[str], top_k: int = 5) -> list[ArticleChunk]:
-        """Return the top_k chunks most semantically relevant to query, filtered by team membership."""
+        """Return the top_k chunks most semantically relevant to query, filtered by team membership.
+
+        Fetches up to top_k * 3 candidates from Chroma then deduplicates by URL so that multiple
+        chunks from the same article don't consume result slots.
+        """
         where = self._team_filter(teams)
+        fetch_k = top_k * 3
         results = self._collection.query(
             query_embeddings=self._embeddings.embed([query]),
-            n_results=top_k,
+            n_results=fetch_k,
             **({"where": where} if where else {}),
         )
         chunks = []
+        seen_urls: set[str] = set()
         documents = results.get("documents", [[]])[0]
         for i, doc in enumerate(documents):
             meta = results["metadatas"][0][i]
+            url = meta["url"]
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
             chunks.append(
                 ArticleChunk(
                     chunk_id=results["ids"][0][i],
                     content=doc,
                     source=meta["source"],
-                    url=meta["url"],
+                    url=url,
                     published_at=meta["published_at"],
                     teams=meta["teams"].split("|") if meta["teams"] else [],
                 )
             )
+            if len(chunks) == top_k:
+                break
         return chunks
 
     def _metadata_for(self, chunk: ArticleChunk) -> dict[str, str | bool]:
