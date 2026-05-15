@@ -334,7 +334,7 @@ class SynthesisAlertAgent:
             evidence_quality_score=evidence_quality_score,
         )
         implied = self._market_implied_probabilities(odds)
-        adjusted_probability = self._adjusted_probability_for_market(adjusted, decision.recommended_market)
+        adjusted_probability = self._probability_from_baseline(adjusted, decision.recommended_market)
         edge_market = decision.recommended_market
         edge_value = (
             round(
@@ -509,7 +509,7 @@ class SynthesisAlertAgent:
         """Return a short human-readable summary of the forecast and alert decision."""
         market_category = self._market_category(decision.recommended_market)
         market_label = self._market_label(match, decision.recommended_market)
-        adjusted_probability = self._adjusted_probability_for_market(forecast, decision.recommended_market)
+        adjusted_probability = self._probability_from_forecast(forecast, decision.recommended_market)
         edge_value = forecast.edge_value or 0.0
         implied_probability = (
             adjusted_probability - edge_value
@@ -550,16 +550,25 @@ class SynthesisAlertAgent:
         }
         return labels.get(market or "", market or "Unknown market")
 
-    def _adjusted_probability_for_market(self, forecast_or_adjusted, market: str | None) -> float | None:
-        """Return the adjusted probability corresponding to a market from a Forecast or BaselineForecast."""
-        probabilities = {
-            "home_win": getattr(forecast_or_adjusted, "adjusted_home_win", None) if isinstance(forecast_or_adjusted, Forecast) else forecast_or_adjusted.home_win,
-            "draw": getattr(forecast_or_adjusted, "adjusted_draw", None) if isinstance(forecast_or_adjusted, Forecast) else forecast_or_adjusted.draw,
-            "away_win": getattr(forecast_or_adjusted, "adjusted_away_win", None) if isinstance(forecast_or_adjusted, Forecast) else forecast_or_adjusted.away_win,
-            "over_2_5": getattr(forecast_or_adjusted, "adjusted_over_2_5", None) if isinstance(forecast_or_adjusted, Forecast) else forecast_or_adjusted.over_2_5,
-            "under_2_5": getattr(forecast_or_adjusted, "adjusted_under_2_5", None) if isinstance(forecast_or_adjusted, Forecast) else forecast_or_adjusted.under_2_5,
-        }
-        return probabilities.get(market or "")
+    def _probability_from_baseline(self, baseline: BaselineForecast, market: str | None) -> float | None:
+        """Return the probability for the given market from an adjusted BaselineForecast."""
+        return {
+            "home_win": baseline.home_win,
+            "draw": baseline.draw,
+            "away_win": baseline.away_win,
+            "over_2_5": baseline.over_2_5,
+            "under_2_5": baseline.under_2_5,
+        }.get(market or "")
+
+    def _probability_from_forecast(self, forecast: Forecast, market: str | None) -> float | None:
+        """Return the adjusted probability for the given market from a persisted Forecast."""
+        return {
+            "home_win": forecast.adjusted_home_win,
+            "draw": forecast.adjusted_draw,
+            "away_win": forecast.adjusted_away_win,
+            "over_2_5": forecast.adjusted_over_2_5,
+            "under_2_5": forecast.adjusted_under_2_5,
+        }.get(market or "")
 
     def _market_source_summary(self, odds: MarketOdds, market: str | None) -> str:
         """Return the market source summary for the selected market."""

@@ -23,6 +23,19 @@ from soccer_forecast_agent.providers.llm import LLMProvider
 LOGGER = logging.getLogger(__name__)
 
 
+def _json_serialiser(value: object) -> object:
+    """Return a JSON-compatible representation for datetimes, dataclasses, and Pydantic models."""
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, tuple):
+        return list(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
+
+
 class ToolDispatcher:
     """Routes LLM tool call requests to the appropriate MCP client method."""
 
@@ -46,19 +59,7 @@ class ToolDispatcher:
 
     def _serialise(self, value) -> str:
         """Convert tool results into a JSON string the LLM can safely observe."""
-        return json.dumps(value, default=self._json_default)
-
-    def _json_default(self, value):
-        """Return a JSON-compatible representation of tool output values."""
-        if is_dataclass(value):
-            return asdict(value)
-        if isinstance(value, datetime):
-            return value.isoformat()
-        if hasattr(value, "model_dump"):
-            return value.model_dump()
-        if isinstance(value, tuple):
-            return list(value)
-        raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
+        return json.dumps(value, default=_json_serialiser)
 
 
 class NewsContextAgent:
@@ -392,19 +393,9 @@ class NewsContextAgent:
     def _pretty(self, value: object) -> str:
         """Return a compact JSON string for debug logging."""
         try:
-            return json.dumps(value, default=self._json_default, indent=2, sort_keys=True)
+            return json.dumps(value, default=_json_serialiser, indent=2, sort_keys=True)
         except TypeError:
             return str(value)
-
-    def _json_default(self, value: object) -> object:
-        """Return a log-safe representation for datetimes and dataclasses."""
-        if is_dataclass(value):
-            return asdict(value)
-        if isinstance(value, datetime):
-            return value.isoformat()
-        if hasattr(value, "model_dump"):
-            return value.model_dump()
-        raise TypeError(f"Object of type {type(value).__name__} is not JSON serialisable")
 
     def _parse_json_array(self, raw_text: str) -> list[dict]:
         """Parse a JSON array from a model response, tolerating fenced code blocks."""

@@ -24,6 +24,7 @@ class OddsFetcher:
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=10)
         self._team_names = team_name_normalizer or TeamNameNormalizer()
+        self._cached_events: list[dict] | None = None
 
     def fetch_odds(self, home_team: str, away_team: str) -> MarketOdds | None:
         """Return the latest market odds for the match identified by home/away team names, or None if not listed."""
@@ -46,6 +47,8 @@ class OddsFetcher:
 
     def _fetch_all_events(self) -> list[dict]:
         """Fetch all upcoming EPL events with h2h and totals markets from The Odds API."""
+        if self._cached_events is not None:
+            return self._cached_events
         response = self._client.get(
             f"{self.BASE_URL}/sports/{self.SPORT_KEY}/odds/",
             params={
@@ -56,7 +59,8 @@ class OddsFetcher:
             },
         )
         response.raise_for_status()
-        return response.json()
+        self._cached_events = response.json()
+        return self._cached_events
 
     def _find_event(self, events: list[dict], home_team: str, away_team: str) -> dict | None:
         """Find the event matching the given team names using normalised string comparison."""

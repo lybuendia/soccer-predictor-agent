@@ -3,6 +3,7 @@
 from typing import TypedDict
 from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from soccer_forecast_agent.models.match import Match, MarketOdds, BaselineForecast, Forecast
 from soccer_forecast_agent.models.evidence import EvidenceItem, InterpretedEvidence
@@ -43,7 +44,7 @@ class SupervisorAgent:
         self._synthesis = synthesis_agent
         self._min_edge_threshold = min_edge_threshold
 
-    def build_graph(self):
+    def build_graph(self) -> CompiledStateGraph:
         """Construct and compile the LangGraph StateGraph with all nodes and conditional edges."""
         graph = StateGraph(GraphState)
 

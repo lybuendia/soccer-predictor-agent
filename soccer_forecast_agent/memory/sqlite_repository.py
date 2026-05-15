@@ -3,6 +3,7 @@
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from soccer_forecast_agent.domain.team_names import TeamNameNormalizer
 from soccer_forecast_agent.models.match import Match, Forecast, BaselineForecast
 from soccer_forecast_agent.models.evidence import EvidenceItem
 
@@ -17,15 +18,21 @@ def init_db(connection: sqlite3.Connection) -> None:
 class SQLiteRepository:
     """Implements MatchRepository, ForecastRepository, EvidenceRepository, and SourceReliabilityRepository against a SQLite connection."""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        team_name_normalizer: TeamNameNormalizer | None = None,
+    ) -> None:
         """Initialise with an injected SQLite connection."""
         self._conn = connection
         self._conn.row_factory = sqlite3.Row
+        self._team_names = team_name_normalizer or TeamNameNormalizer()
 
     # --- MatchRepository ---
 
     def save_match(self, match: Match) -> None:
         """Upsert a match record by match_id."""
+        canonical_match = self._canonical_match(match)
         self._conn.execute(
             """
             INSERT INTO matches (match_id, competition, home_team, away_team, kickoff_time, status, final_score)
@@ -39,13 +46,13 @@ class SQLiteRepository:
                 final_score=excluded.final_score
             """,
             (
-                match.match_id,
-                match.competition,
-                match.home_team,
-                match.away_team,
-                match.kickoff_time.isoformat(),
-                match.status,
-                match.final_score,
+                canonical_match.match_id,
+                canonical_match.competition,
+                canonical_match.home_team,
+                canonical_match.away_team,
+                canonical_match.kickoff_time.isoformat(),
+                canonical_match.status,
+                canonical_match.final_score,
             ),
         )
         self._conn.commit()
@@ -72,16 +79,16 @@ class SQLiteRepository:
             WHERE competition = ?
               AND status = 'resolved'
               AND final_score IS NOT NULL
-              AND (home_team = ? OR away_team = ?)
         """
-        params: list = [competition, team, team]
+        params: list = [competition]
         if before is not None:
             query += "  AND kickoff_time < ?\n"
             params.append(before.isoformat())
-        query += "ORDER BY kickoff_time DESC LIMIT ?"
-        params.append(limit)
+        query += "ORDER BY kickoff_time DESC"
         rows = self._conn.execute(query, params).fetchall()
-        return [self._row_to_match(r) for r in rows]
+        canonical_team = self._team_names.canonicalize(team)
+        matches = [match for match in (self._row_to_match(r) for r in rows) if canonical_team in {match.home_team, match.away_team}]
+        return matches[:limit]
 
     def get_all_finished(self, competition: str) -> list[Match]:
         """Return all resolved matches for a competition ordered chronologically."""
@@ -197,11 +204,23 @@ class SQLiteRepository:
         return Match(
             match_id=row["match_id"],
             competition=row["competition"],
-            home_team=row["home_team"],
-            away_team=row["away_team"],
+            home_team=self._team_names.canonicalize(row["home_team"]),
+            away_team=self._team_names.canonicalize(row["away_team"]),
             kickoff_time=datetime.fromisoformat(row["kickoff_time"]),
             status=row["status"],
             final_score=row["final_score"],
+        )
+
+    def _canonical_match(self, match: Match) -> Match:
+        """Return a match whose team names have been canonicalized."""
+        return Match(
+            match_id=match.match_id,
+            competition=match.competition,
+            home_team=self._team_names.canonicalize(match.home_team),
+            away_team=self._team_names.canonicalize(match.away_team),
+            kickoff_time=match.kickoff_time,
+            status=match.status,
+            final_score=match.final_score,
         )
 
     def _row_to_forecast(self, row: sqlite3.Row) -> Forecast:
